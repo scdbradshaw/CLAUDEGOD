@@ -3,9 +3,9 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
-import { applyDelta } from '../services/simulation.service';
+import { applyDelta, applyBulkFilter } from '../services/simulation.service';
 import { validate } from '../middleware/validate';
-import { DeltaRequestSchema } from '../types/person';
+import { DeltaRequestSchema, BulkActionSchema } from '../types/person';
 
 const router = Router();
 
@@ -22,6 +22,25 @@ const router = Router();
  * Simulation rules are completely bypassed.
  * The memory bank entry records the event with the applied delta.
  */
+/**
+ * POST /api/god-mode/bulk
+ *
+ * Apply a delta to all persons matching the filter query.
+ * Each matched person gets a MemoryBank entry.
+ *
+ * Body shape:
+ * {
+ *   filters:          [{ field: "age", op: "lt", value: 10 }],
+ *   delta:            { "wealth": { mode: "nudge", value: 100000 } },
+ *   event_summary:    "Divine boon — children blessed with fortune",
+ *   emotional_impact: "euphoric"
+ * }
+ */
+router.post('/bulk', validate(BulkActionSchema), async (req: Request, res: Response) => {
+  const result = await applyBulkFilter(req.body);
+  res.json(result);
+});
+
 router.post('/:id', validate(DeltaRequestSchema), async (req: Request, res: Response) => {
   const { delta, event_summary, emotional_impact } = req.body;
 

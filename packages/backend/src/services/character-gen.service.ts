@@ -4,7 +4,7 @@
 // ============================================================
 
 import { Sexuality } from '@prisma/client';
-import { TRAIT_CATEGORIES, GLOBAL_TRAITS } from '@civ-sim/shared';
+import { IDENTITY_ATTRIBUTES, GLOBAL_TRAITS } from '@civ-sim/shared';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -82,16 +82,16 @@ export const ARCHETYPE_LABELS = ARCHETYPES.map(a => a.label);
 // ── Trait biases ──────────────────────────────────────────────
 
 const TRAIT_BIASES: Record<string, Partial<Record<string, number>>> = {
-  noble:    { dominance_drive: 25, status_reading: 20, command_presence: 20, bloodline_pride: 25, dignity_retention: 20 },
-  merchant: { negotiation: 25, barter_skill: 25, accumulation_drive: 20, debt_tolerance: 15, risk_tolerance: 15 },
-  soldier:  { combat_skill: 25, weapon_affinity: 20, endurance: 20, fear_management: 15, killing_threshold: -20, tactical_mind: 20 },
-  criminal: { lying_ability: 25, concealment: 20, misdirection: 20, killing_threshold: -25, vengefulness: 20, risk_tolerance: 20 },
-  scholar:  { pattern_recognition: 25, medical_knowledge: 20, map_memory: 20, myth_making: 15, justice_belief: 15 },
-  priest:   { death_acceptance: 25, ritual_importance: 25, destiny_belief: 20, mercy: 20, oral_tradition: 15 },
-  farmer:   { foraging: 20, weather_reading: 20, stockpiling: 20, waste_aversion: 15 },
-  wanderer: { wayfinding: 25, environmental_flexibility: 25, escape_instinct: 20, isolation_tolerance: 20, diet_flexibility: 20 },
-  artisan:  { tool_making: 25, music: 15, myth_making: 15, skill_acquisition_speed: 15 },
-  elder:    { oral_tradition: 25, death_acceptance: 20, gut_accuracy: 20, group_cohesion: 15 },
+  noble:    { leadership: 25, charisma: 20, ambition: 20, beauty: 15, persuasion: 15 },
+  merchant: { cunning: 25, persuasion: 25, ambition: 20, intelligence: 10 },
+  soldier:  { combat: 25, strength: 20, endurance: 20, courage: 15, discipline: 10 },
+  criminal: { cunning: 25, street_smarts: 20, honesty: -30, resilience: 15 },
+  scholar:  { intelligence: 25, curiosity: 25, memory: 20, creativity: 15 },
+  priest:   { empathy: 20, discipline: 25, charisma: 15, resilience: 15, honesty: 10 },
+  farmer:   { endurance: 20, strength: 15, resilience: 20, discipline: 10 },
+  wanderer: { survival: 25, street_smarts: 20, resilience: 15, agility: 10 },
+  artisan:  { craftsmanship: 25, artistry: 20, creativity: 15, discipline: 10 },
+  elder:    { intelligence: 10, empathy: 20, resilience: 20, memory: 15, wisdom: 15 },
 };
 
 // ── Generation functions ──────────────────────────────────────
@@ -165,8 +165,8 @@ export function generateGlobalScores(worldTraits: Record<string, number>): Recor
 export function generateTraits(archetypeLabel: string): Record<string, number> {
   const bias = TRAIT_BIASES[archetypeLabel] ?? {};
   const traits: Record<string, number> = {};
-  for (const traitKeys of Object.values(TRAIT_CATEGORIES)) {
-    for (const key of traitKeys) {
+  for (const attrKeys of Object.values(IDENTITY_ATTRIBUTES)) {
+    for (const key of attrKeys) {
       traits[key] = clamp(rnd(20, 70) + (bias[key] ?? 0));
     }
   }
@@ -180,8 +180,9 @@ export interface GeneratedCharacter {
   sexuality:           Sexuality;
   gender:              string;
   race:                string;
+  occupation:          string;
   age:                 number;
-  lifespan:            number;
+  death_age:           number;
   relationship_status: string;
   religion:            string;
   criminal_record:     object[];
@@ -202,11 +203,11 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
     ? (ARCHETYPES.find(a => a.label === archetypeLabel) ?? pick(ARCHETYPES))
     : pick(ARCHETYPES);
 
-  const race       = pick(RACES);
-  const gender     = pick(GENDERS);
-  const lifespan   = getLifespan(race);
-  const age        = Math.min(rnd(archetype.ageMin, archetype.ageMax), lifespan - 1);
-  const sexuality  = pick(SEXUALITIES);
+  const race      = pick(RACES);
+  const gender    = pick(GENDERS);
+  const death_age = getLifespan(race);
+  const age       = Math.min(rnd(archetype.ageMin, archetype.ageMax), death_age - 1);
+  const sexuality = pick(SEXUALITIES);
 
   const base = () => rnd(30, 70);
   const stat = (key: string, b: number) => clamp(b + (archetype.statBias[key] ?? 0));
@@ -220,8 +221,9 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
     sexuality,
     gender,
     race,
+    occupation:          archetype.label,
     age,
-    lifespan,
+    death_age,
     relationship_status: pick(RELATIONSHIPS),
     religion:            pick(RELIGIONS),
     criminal_record:     criminalRecord,

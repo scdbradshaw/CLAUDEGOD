@@ -100,7 +100,7 @@ export default function CharacterDetail() {
                 ['Religion',     person.religion],
                 ['Relationship', person.relationship_status],
                 ['Age',          `${person.age} yrs`],
-                ['Lifespan',     `${person.lifespan} yrs`],
+                ['Death Age',    `${person.death_age} yrs`],
               ].map(([k, v]) => (
                 <div key={k}>
                   <span className="text-muted block text-[10px]">{k}</span>
@@ -123,7 +123,7 @@ export default function CharacterDetail() {
                 <StatBar
                   key={key}
                   label={label}
-                  value={(person as Record<string, unknown>)[key] as number}
+                  value={(person as unknown as Record<string, unknown>)[key] as number}
                 />
               ))}
             </div>
@@ -141,7 +141,7 @@ export default function CharacterDetail() {
                     <div key={key}>
                       <p className={`text-xs font-semibold mb-2 uppercase tracking-widest ${color}`}>{label}</p>
                       <div className="space-y-1.5">
-                        {children.map(([child, childDef]) => {
+                        {children.map(([child]) => {
                           const val = (person.global_scores as Record<string, number>)[`${key}.${child}`] ?? 0;
                           const norm = normalizeChild(key, child, val);
                           return (
@@ -179,12 +179,12 @@ export default function CharacterDetail() {
               <h2 className="text-[10px] text-muted uppercase tracking-widest mb-2">Age Progress</h2>
               <p className="text-2xl font-bold text-gray-200 tabular-nums">
                 {person.age}
-                <span className="text-sm text-muted font-normal"> / {person.lifespan} yrs</span>
+                <span className="text-sm text-muted font-normal"> / {person.death_age} yrs</span>
               </p>
               <div className="mt-2">
                 <StatBar
                   label=""
-                  value={Math.round((person.age / person.lifespan) * 100)}
+                  value={Math.round((person.age / person.death_age) * 100)}
                   showValue={false}
                 />
               </div>

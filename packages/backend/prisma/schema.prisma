@@ -48,6 +48,90 @@ enum HeadlineType {
   DECADE
 }
 
+enum InnerCircleRelation {
+  parent
+  child
+  sibling
+  spouse
+  lover
+  close_friend
+  rival
+  enemy
+}
+
+enum GroupOrigin {
+  emergent
+  player
+  event
+}
+
+enum PopulationTier {
+  intimate      // 100–500
+  town          // 500–5,000
+  civilization  // 5,000–50,000
+}
+
+// Voice routing for Claude narration. Determines the voice prefix
+// injected into headline / memory / decade prompts.
+//   tabloid   — scandals, rises/falls, affairs, forced interactions
+//   literary  — deaths, births, quiet beats, natural old-age passing
+//   epic      — group founded/dissolved/split, decade summaries
+//   reportage — bulk chaos (plague, nukes, bulk God Mode filter actions)
+//   neutral   — fallback; terse factual for low-magnitude routine events
+enum Tone {
+  tabloid
+  literary
+  epic
+  reportage
+  neutral
+}
+
+// --------------- World ---------------
+// Replaces the singleton WorldState. Each World is a fully isolated
+// state: its own population, groups, headlines, and economy.
+
+model World {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  is_active   Boolean   @default(false)
+  archived_at DateTime?
+
+  population_tier PopulationTier @default(intimate)
+
+  /// The ruleset driving this world's interactions. Nullable so a world
+  /// can exist before a ruleset is chosen (picked at creation time in UI).
+  ruleset    Ruleset? @relation(fields: [ruleset_id], references: [id], onDelete: SetNull)
+  ruleset_id String?  @db.Uuid
+
+  // ── Operational state (was WorldState) ──────────────────────
+  current_year              Int    @default(1)
+  tick_count                Int    @default(0)
+  total_deaths              Int    @default(0)
+  market_index              Float  @default(100.0)
+  market_trend              Float  @default(0.015)
+  market_volatility         Float  @default(0.03)
+  /// Flat map of all global trait child values  e.g. { "war.morale": 20 }
+  global_traits             Json   @default("{}")
+  /// Per-force effect multipliers e.g. { "war": 1.5 }
+  global_trait_multipliers  Json   @default("{}")
+  /// Which 5 trait categories are active/shown in UI
+  active_trait_categories   Json   @default("[]")
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  // ── Per-world entity sets ────────────────────────────────────
+  persons   Person[]
+  religions Religion[]
+  factions  Faction[]
+  deceased  DeceasedPerson[]
+  headlines YearlyHeadline[]
+
+  @@index([is_active])
+  @@map("worlds")
+}
+
 // --------------- Person ---------------
 
 model Person {
@@ -55,26 +139,27 @@ model Person {
   name String
 
   // ── Demographic ──────────────────────────────────────────
-  sexuality           Sexuality
-  gender              String
-  race                String
-  age                 Int
-  /// Expected maximum age in years
-  lifespan            Int       @default(80)
+  sexuality  Sexuality
+  gender     String
+  race       String
+  occupation String    @default("commoner")
+  age        Int
+  /// Age at which natural death occurs — rolled from race lifespan at birth
+  death_age  Int       @default(80)
 
   // ── Social ───────────────────────────────────────────────
   relationship_status String
   religion            String
   /// JSONB array of CriminalRecord objects
-  criminal_record     Json      @default("[]")
+  criminal_record     Json   @default("[]")
 
   // ── Stats 0-100 ──────────────────────────────────────────
   health       Int @default(100) // 0-100
-  morality     Int @default(50)  // 0-100
-  happiness    Int @default(50)  // 0-100
-  reputation   Int @default(50)  // 0-100
-  influence    Int @default(0)   // 0-100
-  intelligence Int @default(50)  // 0-100
+  morality     Int @default(50) // 0-100
+  happiness    Int @default(50) // 0-100
+  reputation   Int @default(50) // 0-100
+  influence    Int @default(0) // 0-100
+  intelligence Int @default(50) // 0-100
 
   // ── Other ────────────────────────────────────────────────
   physical_appearance String
@@ -85,14 +170,50 @@ model Person {
   /// JSONB map of personal global force scores e.g. { "war.morale": 45 }
   global_scores       Json   @default("{}")
 
+  // ── World ────────────────────────────────────────────────
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
   // ── Timestamps ───────────────────────────────────────────
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
 
   // ── Relations ────────────────────────────────────────────
-  memory_bank MemoryBank[]
+  memory_bank          MemoryBank[]
+  links_out            InnerCircleLink[]    @relation("LinkOwner")
+  links_in             InnerCircleLink[]    @relation("LinkTarget")
+  founded_religions    Religion[]           @relation("ReligionFounder")
+  religion_memberships ReligionMembership[]
+  founded_factions     Faction[]            @relation("FactionFounder")
+  led_factions         Faction[]            @relation("FactionLeader")
+  faction_memberships  FactionMembership[]
 
+  @@index([world_id])
   @@map("persons")
+}
+
+// --------------- Inner Circle Links ---------------
+// Directed per-person relationship edge. Both directions are stored
+// as separate rows when a relationship is reciprocal (e.g. siblings).
+model InnerCircleLink {
+  id String @id @default(uuid()) @db.Uuid
+
+  owner     Person @relation("LinkOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+  owner_id  String @db.Uuid
+  target    Person @relation("LinkTarget", fields: [target_id], references: [id], onDelete: Cascade)
+  target_id String @db.Uuid
+
+  relation_type InnerCircleRelation
+  /// 0-100 — drives antagonizer pick weight and interaction colouring
+  bond_strength Int                 @default(50)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([owner_id, target_id, relation_type])
+  @@index([owner_id])
+  @@index([target_id])
+  @@map("inner_circle_links")
 }
 
 // --------------- Memory Bank ---------------
@@ -109,46 +230,26 @@ model MemoryBank {
   /// Snapshot of the PersonDelta that triggered this memory
   delta_applied Json
 
+  /// 0.0-1.0 — how extreme the triggering outcome was. Drives memory decay
+  /// and trauma-modifier strength. 1.0 = top/bottom band; 0.0 = neutral.
+  magnitude       Float   @default(0.5)
+  /// Optional counterparty (antagonist/co-subject) used for grudge weighting.
+  counterparty_id String? @db.Uuid
+  /// Narrative voice this memory was written in. Optional — back-filled as null
+  /// on rows older than Phase 5. New writes should always tag.
+  tone            Tone?
+
   timestamp  DateTime @default(now())
-  world_year Int?     // the world calendar year this memory occurred in
+  world_year Int? // the world calendar year this memory occurred in
 
   @@index([person_id])
   @@index([timestamp])
   @@index([world_year])
+  @@index([counterparty_id])
   @@map("memory_bank")
 }
 
-// --------------- World State (singleton) ---------------
-
-model WorldState {
-  id           Int      @id @default(autoincrement())
-  current_year Int      @default(1)
-  updated_at   DateTime @updatedAt
-  /// Which 5 of the 25 trait categories are currently active (shown in UI, fed to Claude)
-  active_trait_categories Json @default("[]")
-  /// Flat map of all 24 global trait child values (e.g. "war.morale": 20)
-  global_traits           Json @default("{}")
-
-  // ── Tick engine ──────────────────────────────────────────────
-  /// Total ticks run (2 per year)
-  tick_count               Int   @default(0)
-  /// Cumulative death count across all ticks
-  total_deaths             Int   @default(0)
-
-  // ── Economy / stock market ───────────────────────────────────
-  /// Current market index value (starts at 100)
-  market_index             Float @default(100.0)
-  /// Per-tick upward drift rate (e.g. 0.015 = 1.5% per tick)
-  market_trend             Float @default(0.015)
-  /// Random noise amplitude per tick (e.g. 0.03 = ±3%)
-  market_volatility        Float @default(0.03)
-
-  // ── Global trait multipliers ─────────────────────────────────
-  /// Per-trait effect multipliers e.g. { "war": 1.5, "plague": 2.0 }
-  global_trait_multipliers Json  @default("{}")
-
-  @@map("world_state")
-}
+// WorldState has been superseded by the World model above.
 
 // --------------- Deceased Persons (RIP archive) ---------------
 
@@ -166,6 +267,10 @@ model DeceasedPerson {
   peak_negative_outcome String?
   died_at               DateTime @default(now())
 
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  @@index([world_id])
   @@map("deceased_persons")
 }
 
@@ -180,6 +285,8 @@ model Ruleset {
   rules       Json
   created_at  DateTime @default(now())
   updated_at  DateTime @updatedAt
+
+  worlds World[]
 
   @@map("rulesets")
 }
@@ -196,10 +303,145 @@ model YearlyHeadline {
   story       String
   person_id   String?          @db.Uuid
   person_name String?
+  /// Voice the narrative was written in. Decade summaries are always `epic`.
+  tone        Tone             @default(neutral)
   created_at  DateTime         @default(now())
 
-  @@unique([year, type, category])
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  @@unique([world_id, year, type, category])
   @@index([year])
   @@index([type])
+  @@index([world_id])
   @@map("yearly_headlines")
+}
+
+// --------------- Religions ---------------
+// Personality-cult shared entity. Dies the instant its founder dies.
+// `virus_profile` is a JSONB map of trait/global-score thresholds, e.g.
+//   { "charisma": { "min": 60 }, "faith.devotion": { "min": 70 } }
+// Unknown keys are silently ignored by the engine.
+model Religion {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+
+  /// Nullable so dissolved religions persist in the archive after founder death.
+  founder    Person? @relation("ReligionFounder", fields: [founder_id], references: [id], onDelete: SetNull)
+  founder_id String? @db.Uuid
+
+  /// How the group was created. emergent / player / event
+  origin        GroupOrigin @default(emergent)
+  /// Tolerance band (0-100) around thresholds — softens profile matching.
+  tolerance     Int         @default(10)
+  /// Trait/global-score thresholds (see above comment).
+  virus_profile Json        @default("{}")
+
+  founded_year     Int
+  is_active        Boolean @default(true)
+  dissolved_year   Int?
+  /// 'founder_death' | 'player' | 'split'
+  dissolved_reason String?
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  memberships ReligionMembership[]
+
+  @@index([founder_id])
+  @@index([is_active])
+  @@index([world_id])
+  @@map("religions")
+}
+
+model ReligionMembership {
+  id String @id @default(uuid()) @db.Uuid
+
+  religion    Religion @relation(fields: [religion_id], references: [id], onDelete: Cascade)
+  religion_id String   @db.Uuid
+  person      Person   @relation(fields: [person_id], references: [id], onDelete: Cascade)
+  person_id   String   @db.Uuid
+
+  joined_year Int
+  /// 0.0-1.0 — how cleanly the member matches the current virus profile.
+  alignment   Float @default(1.0)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([religion_id, person_id])
+  @@index([religion_id])
+  @@index([person_id])
+  @@map("religion_memberships")
+}
+
+// --------------- Factions ---------------
+// Political/organisational group. Survives past its leader's death if a
+// worthy successor exists (leadership >= gate). Can split when a member's
+// profile alignment beats the leader's by more than the founder buffer.
+model Faction {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+
+  /// Nullable so historical factions persist after founder death.
+  founder    Person? @relation("FactionFounder", fields: [founder_id], references: [id], onDelete: SetNull)
+  founder_id String? @db.Uuid
+  /// Current leader — may differ from founder after succession or split.
+  leader     Person? @relation("FactionLeader", fields: [leader_id], references: [id], onDelete: SetNull)
+  leader_id  String? @db.Uuid
+
+  origin        GroupOrigin @default(emergent)
+  tolerance     Int         @default(10)
+  virus_profile Json        @default("{}")
+
+  founded_year     Int
+  is_active        Boolean @default(true)
+  dissolved_year   Int?
+  /// 'leader_void' | 'player' | 'split' | 'merged'
+  dissolved_reason String?
+
+  /// If this faction was born from a split, the parent faction id.
+  split_from_id String? @db.Uuid
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  memberships FactionMembership[]
+
+  @@index([founder_id])
+  @@index([leader_id])
+  @@index([is_active])
+  @@index([world_id])
+  @@map("factions")
+}
+
+model FactionMembership {
+  id String @id @default(uuid()) @db.Uuid
+
+  faction    Faction @relation(fields: [faction_id], references: [id], onDelete: Cascade)
+  faction_id String  @db.Uuid
+  person     Person  @relation(fields: [person_id], references: [id], onDelete: Cascade)
+  person_id  String  @db.Uuid
+
+  joined_year          Int
+  alignment            Float @default(1.0)
+  /// Used by split-detection: ticks that this member's alignment has
+  /// exceeded the leader's alignment by the founder-buffer margin.
+  split_pressure_ticks Int   @default(0)
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@unique([faction_id, person_id])
+  @@index([faction_id])
+  @@index([person_id])
+  @@map("faction_memberships")
 }

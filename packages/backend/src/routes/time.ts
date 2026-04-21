@@ -9,7 +9,7 @@
 
 import { Router } from 'express';
 import { z } from 'zod';
-import { getWorldState, advanceTime, rewindTime, getHeadlines } from '../services/time.service';
+import { getActiveWorld, advanceTime, rewindTime, getHeadlines, getActiveWorldId } from '../services/time.service';
 import { generateHeadlinesForYear } from '../services/headlines.service';
 import { validate } from '../middleware/validate';
 
@@ -17,9 +17,8 @@ const router = Router();
 
 // GET /api/time
 router.get('/', async (_req, res) => {
-  const state = await getWorldState();
+  const state = await getActiveWorld();
 
-  // Return last 10 years of annual headlines alongside state
   const recentHeadlines = await getHeadlines({
     type:     'ANNUAL',
     yearFrom: state.current_year - 10,
@@ -68,7 +67,8 @@ router.post(
   '/headlines/generate',
   validate(z.object({ year: z.number().int().min(1) })),
   async (req, res) => {
-    const results = await generateHeadlinesForYear(req.body.year);
+    const worldId = await getActiveWorldId();
+    const results = await generateHeadlinesForYear(req.body.year, worldId);
     res.json({ generated: results.length, headlines: results });
   },
 );

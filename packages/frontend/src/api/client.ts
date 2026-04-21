@@ -14,6 +14,11 @@ import type {
   TickResult,
   EconomyState,
   DeceasedPerson,
+  BulkActionRequest,
+  BulkActionResult,
+  World,
+  WorldListItem,
+  PopulationTier,
 } from '@civ-sim/shared';
 
 const BASE = '/api';
@@ -97,13 +102,48 @@ export const api = {
     activate: (id: string) =>
       request<RulesetRow>(`/rulesets/${id}/activate`, { method: 'POST' }),
 
+    clone: (id: string) =>
+      request<RulesetRow>(`/rulesets/${id}/clone`, { method: 'POST' }),
+
     delete: (id: string) =>
       request<void>(`/rulesets/${id}`, { method: 'DELETE' }),
+  },
+
+  worlds: {
+    list: () =>
+      request<WorldListItem[]>('/worlds'),
+
+    get: (id: string) =>
+      request<World>(`/worlds/${id}`),
+
+    create: (body: { name: string; description?: string; population_tier?: PopulationTier; ruleset_id?: string }) =>
+      request<World>('/worlds', { method: 'POST', body: JSON.stringify(body) }),
+
+    update: (id: string, body: { name?: string; description?: string; ruleset_id?: string | null; population_tier?: PopulationTier }) =>
+      request<World>(`/worlds/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+    activate: (id: string) =>
+      request<World>(`/worlds/${id}/activate`, { method: 'POST' }),
+
+    archive: (id: string) =>
+      request<World>(`/worlds/${id}/archive`, { method: 'POST' }),
+
+    unarchive: (id: string) =>
+      request<World>(`/worlds/${id}/unarchive`, { method: 'POST' }),
+
+    delete: (id: string) =>
+      request<void>(`/worlds/${id}`, { method: 'DELETE' }),
   },
 
   interactions: {
     tick: () =>
       request<TickResult>('/interactions/tick', { method: 'POST' }),
+
+    force: (body: { subject_id: string; antagonist_id: string; interaction_type_id: string }) =>
+      request<ForceInteractionResult>('/interactions/force', {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
   },
 
   economy: {
@@ -143,6 +183,12 @@ export const api = {
   godMode: {
     apply: (id: string, body: DeltaRequest) =>
       request<MutationResult>(`/god-mode/${id}`, {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+
+    bulk: (body: BulkActionRequest) =>
+      request<BulkActionResult>('/god-mode/bulk', {
         method: 'POST',
         body:   JSON.stringify(body),
       }),
@@ -232,6 +278,19 @@ export interface RewindResult {
   previous_year: number;
   current_year:  number;
   rewound_by:    number;
+}
+
+export interface ForceInteractionResult {
+  subject_name:             string;
+  antagonist_name:          string;
+  interaction_type:         { id: string; label: string };
+  score:                    number;
+  grudge_bonus:             number;
+  outcome:                  string;
+  magnitude:                number;
+  creates_memory:           boolean;
+  subject_stats_changed:    Record<string, number>;
+  antagonist_stats_changed: Record<string, number>;
 }
 
 export interface RulesetListItem {

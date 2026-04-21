@@ -5,7 +5,7 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../db/client';
 import { GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
-import { getWorldState } from '../services/time.service';
+import { getActiveWorld } from '../services/time.service';
 
 const router = Router();
 
@@ -22,13 +22,12 @@ function forceCompositeScore(force: string, traits: Record<string, number>): num
 
 // ── GET /api/world ───────────────────────────────────────────
 router.get('/', async (_req: Request, res: Response) => {
-  const [world, agg] = await Promise.all([
-    getWorldState(),
-    prisma.person.aggregate({
-      _count: { id: true },
-      _avg:   { health: true, happiness: true, morality: true, wealth: true },
-    }),
-  ]);
+  const world = await getActiveWorld();
+  const agg   = await prisma.person.aggregate({
+    where:  { world_id: world.id },
+    _count: { id: true },
+    _avg:   { health: true, happiness: true, morality: true, wealth: true },
+  });
 
   const globalTraits = Object.keys((world.global_traits as object) ?? {}).length
     ? world.global_traits as Record<string, number>

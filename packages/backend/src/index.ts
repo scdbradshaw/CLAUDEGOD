@@ -13,6 +13,9 @@ import interactionsRouter  from './routes/interactions';
 import economyRouter       from './routes/economy';
 import ripRouter           from './routes/rip';
 import worldRouter         from './routes/world';
+import religionsRouter     from './routes/religions';
+import factionsRouter      from './routes/factions';
+import worldsRouter        from './routes/worlds';
 import { prisma }          from './db/client';
 
 const app  = express();
@@ -33,6 +36,9 @@ app.use('/api/interactions',  interactionsRouter);
 app.use('/api/economy',       economyRouter);
 app.use('/api/rip',           ripRouter);
 app.use('/api/world',         worldRouter);
+app.use('/api/religions',     religionsRouter);
+app.use('/api/factions',      factionsRouter);
+app.use('/api/worlds',        worldsRouter);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 

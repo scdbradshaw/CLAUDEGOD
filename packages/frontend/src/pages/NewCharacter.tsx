@@ -14,9 +14,10 @@ interface FormState {
   name:                string;
   gender:              string;
   race:                string;
+  occupation:          string;
   sexuality:           Sexuality;
   age:                 number;
-  lifespan:            number;
+  death_age:           number;
   religion:            string;
   relationship_status: string;
   physical_appearance: string;
@@ -121,18 +122,18 @@ function buildRandom(preset?: string): FormState {
   const archlabel= preset ?? pick(Object.keys(ARCHETYPES));
   const race     = pick(RACES);
   const gender   = pick(GENDERS);
-  const lifespan = getLifespan(race);
-  const age      = Math.min(rnd(arch.ageMin, arch.ageMax), lifespan - 1);
+  const death_age = getLifespan(race);
+  const age      = Math.min(rnd(arch.ageMin, arch.ageMax), death_age - 1);
   const stat     = (key: string, b: number) => clamp(b + (arch.statBias[key] ?? 0));
-  void archlabel;
 
   return {
     name:                getName(race, gender),
     gender,
     race,
+    occupation:          archlabel,
     sexuality:           pick(SEXUALITIES),
     age,
-    lifespan,
+    death_age,
     religion:            pick(RELIGIONS),
     relationship_status: pick(RELATIONSHIPS),
     physical_appearance: getAppearance(race, gender, age),
@@ -147,8 +148,8 @@ function buildRandom(preset?: string): FormState {
 }
 
 const BLANK: FormState = {
-  name: '', gender: '', race: '', sexuality: Sexuality.HETEROSEXUAL,
-  age: 25, lifespan: 80, religion: '', relationship_status: '',
+  name: '', gender: '', race: '', occupation: 'commoner', sexuality: Sexuality.HETEROSEXUAL,
+  age: 25, death_age: 80, religion: '', relationship_status: '',
   physical_appearance: '', wealth: 0,
   health: 100, morality: 50, happiness: 50, reputation: 50, influence: 0, intelligence: 50,
 };
@@ -215,6 +216,8 @@ export default function NewCharacter() {
     mutationFn: () => api.characters.create({
       ...form,
       criminal_record: [],
+      traits:          {},
+      global_scores:   {},
     }),
     onSuccess: (person) => {
       qc.invalidateQueries({ queryKey: ['characters'] });
@@ -281,6 +284,9 @@ export default function NewCharacter() {
                 ))}
               </select>
             </Field>
+            <Field label="Occupation" required>
+              <input className={inputClass} placeholder="e.g. merchant, soldier, farmer" value={form.occupation} onChange={set('occupation')} />
+            </Field>
             <Field label="Religion" required>
               <input className={inputClass} placeholder="e.g. The Old Faith, Agnostic" value={form.religion} onChange={set('religion')} />
             </Field>
@@ -301,8 +307,8 @@ export default function NewCharacter() {
             <Field label="Age">
               <input type="number" className={inputClass} min={0} max={999} value={form.age} onChange={setNum('age')} />
             </Field>
-            <Field label="Lifespan">
-              <input type="number" className={inputClass} min={1} max={999} value={form.lifespan} onChange={setNum('lifespan')} />
+            <Field label="Death Age">
+              <input type="number" className={inputClass} min={1} max={999} value={form.death_age} onChange={setNum('death_age')} />
             </Field>
             <Field label="Wealth ($)">
               <input type="number" className={inputClass} min={0} value={form.wealth} onChange={setNum('wealth')} />

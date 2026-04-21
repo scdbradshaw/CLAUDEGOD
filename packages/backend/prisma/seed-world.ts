@@ -5,7 +5,7 @@
 // ============================================================
 
 import { PrismaClient } from '@prisma/client';
-import { DEFAULT_ACTIVE_CATEGORIES, DEFAULT_GLOBAL_TRAITS } from '@civ-sim/shared';
+import { DEFAULT_GLOBAL_TRAITS } from '@civ-sim/shared';
 import { generateCharacter, ARCHETYPE_LABELS } from '../src/services/character-gen.service';
 
 const prisma = new PrismaClient();
@@ -38,12 +38,11 @@ async function main() {
   // Init WorldState with active categories (upsert — safe to re-run)
   await prisma.worldState.upsert({
     where:  { id: 1 },
-    update: { active_trait_categories: DEFAULT_ACTIVE_CATEGORIES, global_traits: DEFAULT_GLOBAL_TRAITS },
-    create: { current_year: 1, active_trait_categories: DEFAULT_ACTIVE_CATEGORIES, global_traits: DEFAULT_GLOBAL_TRAITS },
+    update: { active_trait_categories: [], global_traits: DEFAULT_GLOBAL_TRAITS },
+    create: { current_year: 1, active_trait_categories: [], global_traits: DEFAULT_GLOBAL_TRAITS },
   });
 
   console.log(`Done. ${count} souls now inhabit the realm.`);
-  console.log(`Active trait categories: ${DEFAULT_ACTIVE_CATEGORIES.join(', ')}`);
 }
 
 main()

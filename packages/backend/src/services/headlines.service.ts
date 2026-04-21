@@ -6,26 +6,22 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import prisma from '../db/client';
-import { HeadlineCategory, HeadlineType } from '@prisma/client';
+import { HeadlineCategory, HeadlineType, Tone } from '@prisma/client';
+import {
+  getVoicePrompt,
+  toneForHeadlineCategory,
+  toneForDecadeSummary,
+} from './tone.service';
 
 const anthropic = new Anthropic();
 
-// Emotional impact scores for sorting
-const IMPACT_SCORE: Record<string, number> = {
-  traumatic: -2,
-  negative:  -1,
-  neutral:    0,
-  positive:   1,
-  euphoric:   2,
-};
-
 // ── Candidate queries ──────────────────────────────────────────────────────
 
-async function buildWorldContext(year: number) {
-  // Characters with the most memories this year
+async function buildWorldContext(year: number, worldId: string) {
+  // Characters with the most memories this year (scoped to this world via person FK)
   const activeThisYear = await prisma.memoryBank.groupBy({
     by: ['person_id'],
-    where: { world_year: year },
+    where: { world_year: year, person: { world_id: worldId } },
     _count: { id: true },
     orderBy: { _count: { id: 'desc' } },
     take: 30,
@@ -33,10 +29,9 @@ async function buildWorldContext(year: number) {
 
   const activeIds = activeThisYear.map(r => r.person_id);
 
-  // Grab full data for active characters
   const active = activeIds.length > 0
     ? await prisma.person.findMany({
-        where: { id: { in: activeIds } },
+        where: { id: { in: activeIds }, world_id: worldId },
         include: {
           memory_bank: {
             where: { world_year: year },
@@ -47,22 +42,23 @@ async function buildWorldContext(year: number) {
       })
     : [];
 
-  // Also grab extremes by stat (even if no memories this year)
+  const w = { world_id: worldId };
+
   const [lowestMorality, highestInfluence, lowestHealth, highestWealth, lowestWealth, oldest] =
     await Promise.all([
-      prisma.person.findFirst({ orderBy: { morality: 'asc' },    take: 1 }),
-      prisma.person.findFirst({ orderBy: { influence: 'desc' },  take: 1 }),
-      prisma.person.findFirst({ orderBy: { health: 'asc' },      where: { health: { gt: 0 } }, take: 1 }),
-      prisma.person.findFirst({ orderBy: { wealth: 'desc' },     take: 1 }),
-      prisma.person.findFirst({ orderBy: { wealth: 'asc' },      take: 1 }),
-      prisma.person.findFirst({ orderBy: { age: 'desc' },        take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { morality: 'asc' },   take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { influence: 'desc' }, take: 1 }),
+      prisma.person.findFirst({ where: { ...w, health: { gt: 0 } }, orderBy: { health: 'asc' }, take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { wealth: 'desc' },    take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { wealth: 'asc' },     take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { age: 'desc' },       take: 1 }),
     ]);
 
-  // Recent deaths this year
   const deaths = await prisma.memoryBank.findMany({
     where: {
       world_year: year,
       event_summary: { contains: 'passed away' },
+      person: { world_id: worldId },
     },
     include: { person: true },
     take: 5,
@@ -79,6 +75,7 @@ interface HeadlineResult {
   story: string;
   person_name: string | null;
   person_id: string | null;
+  tone: Tone;
 }
 
 async function callClaude(year: number, context: Awaited<ReturnType<typeof buildWorldContext>>): Promise<HeadlineResult[]> {
@@ -95,61 +92,70 @@ async function callClaude(year: number, context: Awaited<ReturnType<typeof build
     'LONGEST_SURVIVING',
   ];
 
+  // Per-category tone table — Claude is told which voice to use for each slot.
+  // The server stamps the same tone server-side after the response lands, so
+  // Claude's voice and the persisted `tone` column stay in sync.
+  const categoryTones = categories.map(c => ({ category: c, tone: toneForHeadlineCategory(c) }));
+
+  const voiceGuide = categoryTones
+    .map(({ category, tone }) => `- ${category} → write in "${tone}" voice`)
+    .join('\n');
+
+  // Voice reference block — every tone the prompt might invoke.
+  const distinctTones = Array.from(new Set(categoryTones.map(c => c.tone)));
+  const voiceReference = distinctTones
+    .map(t => `### ${t}\n${getVoicePrompt(t)}`)
+    .join('\n\n');
+
   const contextStr = JSON.stringify({
     year,
     active_characters: context.active.map(p => ({
-      id: p.id,
-      name: p.name,
-      race: p.race,
-      age: p.age,
-      health: p.health,
-      morality: p.morality,
-      happiness: p.happiness,
-      reputation: p.reputation,
-      influence: p.influence,
-      wealth: p.wealth,
-      relationship_status: p.relationship_status,
-      criminal_record: p.criminal_record,
+      id: p.id, name: p.name, race: p.race, age: p.age,
+      health: p.health, morality: p.morality, happiness: p.happiness,
+      reputation: p.reputation, influence: p.influence, wealth: p.wealth,
+      relationship_status: p.relationship_status, criminal_record: p.criminal_record,
       recent_memories: p.memory_bank.map(m => ({
-        summary: m.event_summary,
-        impact: m.emotional_impact,
-        delta: m.delta_applied,
+        summary: m.event_summary, impact: m.emotional_impact, delta: m.delta_applied,
       })),
     })),
     notable: {
-      lowest_morality:  context.lowestMorality  ? { id: context.lowestMorality.id,  name: context.lowestMorality.name,  morality: context.lowestMorality.morality }   : null,
-      highest_influence:context.highestInfluence ? { id: context.highestInfluence.id, name: context.highestInfluence.name, influence: context.highestInfluence.influence } : null,
-      lowest_health:    context.lowestHealth     ? { id: context.lowestHealth.id,     name: context.lowestHealth.name,     health: context.lowestHealth.health }           : null,
-      highest_wealth:   context.highestWealth    ? { id: context.highestWealth.id,    name: context.highestWealth.name,    wealth: context.highestWealth.wealth }           : null,
-      lowest_wealth:    context.lowestWealth     ? { id: context.lowestWealth.id,     name: context.lowestWealth.name,    wealth: context.lowestWealth.wealth }            : null,
-      oldest:           context.oldest           ? { id: context.oldest.id,           name: context.oldest.name,           age: context.oldest.age }                       : null,
+      lowest_morality:   context.lowestMorality   ? { id: context.lowestMorality.id,   name: context.lowestMorality.name,   morality: context.lowestMorality.morality }     : null,
+      highest_influence: context.highestInfluence  ? { id: context.highestInfluence.id, name: context.highestInfluence.name, influence: context.highestInfluence.influence }  : null,
+      lowest_health:     context.lowestHealth      ? { id: context.lowestHealth.id,     name: context.lowestHealth.name,     health: context.lowestHealth.health }             : null,
+      highest_wealth:    context.highestWealth     ? { id: context.highestWealth.id,    name: context.highestWealth.name,    wealth: context.highestWealth.wealth }             : null,
+      lowest_wealth:     context.lowestWealth      ? { id: context.lowestWealth.id,     name: context.lowestWealth.name,     wealth: context.lowestWealth.wealth }             : null,
+      oldest:            context.oldest            ? { id: context.oldest.id,           name: context.oldest.name,           age: context.oldest.age }                         : null,
     },
     deaths_this_year: context.deaths.map(d => ({ name: d.person?.name, summary: d.event_summary })),
   }, null, 2);
 
-  const prompt = `You are the Grand Chronicler of this world. Year ${year} has just ended.
+  const prompt = `You are the Chronicler of this world, writing the year-end headlines for Year ${year}.
 
-Based on the world data below, write compelling, dramatic headlines for each of the following categories. Be creative and vivid — these are the stories that will be remembered.
+Each category must be written in a specific voice. Voice references:
 
-Categories to cover:
-${categories.map(c => `- ${c}`).join('\n')}
+${voiceReference}
+
+Voice assignments for this chronicle:
+${voiceGuide}
+
+Match the voice precisely per category — a tabloid category should feel nothing like a literary one.
 
 World Data for Year ${year}:
 ${contextStr}
 
-Return a JSON array (no markdown, raw JSON only) with exactly ${categories.length} objects, one per category:
+Return a JSON array (no markdown, raw JSON only) with exactly ${categories.length} objects, one per category in the order listed above:
 [
   {
     "category": "MOST_DRAMATIC_FALL",
     "headline": "Short punchy headline (max 12 words)",
-    "story": "2-3 sentence dramatic narrative about this character or event",
+    "story": "2-3 sentence narrative in the assigned voice",
     "person_name": "Name of the featured character or null if world event",
     "person_id": "UUID of the featured character or null"
   },
   ...
 ]
 
-If there is not enough data for a specific category, write a world-event headline instead (no specific character). Make every headline feel like it belongs in a fantasy chronicle.`;
+If there is not enough data for a specific category, write a world-event headline in that slot's assigned voice (no specific character). Content ceiling: unflinching — render scandal, violence, and death directly when the voice calls for it.`;
 
   const msg = await anthropic.messages.create({
     model: 'claude-opus-4-6',
@@ -158,10 +164,15 @@ If there is not enough data for a specific category, write a world-event headlin
   });
 
   const raw = msg.content[0].type === 'text' ? msg.content[0].text : '';
-
-  // Strip any markdown fences if present
   const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-  return JSON.parse(cleaned) as HeadlineResult[];
+  const parsed = JSON.parse(cleaned) as Omit<HeadlineResult, 'tone'>[];
+
+  // Stamp tone server-side from the category map — this is authoritative, so
+  // we never drift if Claude returns a voice that doesn't match its assignment.
+  return parsed.map(r => ({
+    ...r,
+    tone: toneForHeadlineCategory(r.category),
+  }));
 }
 
 // ── Decade summary ─────────────────────────────────────────────────────────
@@ -170,8 +181,12 @@ async function buildDecadeSummary(
   decadeStart: number,
   category: HeadlineCategory,
   annuals: { year: number; headline: string; story: string; person_name: string | null }[],
-): Promise<{ headline: string; story: string; person_name: string | null; person_id: string | null }> {
-  const prompt = `You are the Grand Chronicler. Summarize the following decade (${decadeStart}–${decadeStart + 9}) for the category "${category}" into a single powerful headline and summary.
+): Promise<{ headline: string; story: string; person_name: string | null; person_id: string | null; tone: Tone }> {
+  const tone = toneForDecadeSummary();
+
+  const prompt = `${getVoicePrompt(tone)}
+
+Summarize the following decade (${decadeStart}–${decadeStart + 9}) for the category "${category}" into a single powerful headline and summary. Write in the epic voice described above.
 
 Annual headlines for this category:
 ${annuals.map(a => `Year ${a.year} — ${a.headline}: ${a.story}`).join('\n\n')}
@@ -192,20 +207,20 @@ Return raw JSON only (no markdown):
   const raw = msg.content[0].type === 'text' ? msg.content[0].text : '{}';
   const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
   const parsed = JSON.parse(cleaned);
-  return { ...parsed, person_id: null };
+  return { ...parsed, person_id: null, tone };
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-export async function generateHeadlinesForYear(year: number): Promise<HeadlineResult[]> {
-  const context = await buildWorldContext(year);
+export async function generateHeadlinesForYear(year: number, worldId: string): Promise<HeadlineResult[]> {
+  const context = await buildWorldContext(year, worldId);
   const results = await callClaude(year, context);
 
-  // Upsert all headlines
   for (const r of results) {
     await prisma.yearlyHeadline.upsert({
-      where: { year_type_category: { year, type: HeadlineType.ANNUAL, category: r.category } },
+      where: { world_id_year_type_category: { world_id: worldId, year, type: HeadlineType.ANNUAL, category: r.category } },
       create: {
+        world_id:    worldId,
         year,
         type:        HeadlineType.ANNUAL,
         category:    r.category,
@@ -213,12 +228,14 @@ export async function generateHeadlinesForYear(year: number): Promise<HeadlineRe
         story:       r.story,
         person_name: r.person_name,
         person_id:   r.person_id,
+        tone:        r.tone,
       },
       update: {
         headline:    r.headline,
         story:       r.story,
         person_name: r.person_name,
         person_id:   r.person_id,
+        tone:        r.tone,
       },
     });
   }
@@ -226,17 +243,16 @@ export async function generateHeadlinesForYear(year: number): Promise<HeadlineRe
   return results;
 }
 
-export async function compressOldDecades(currentYear: number): Promise<void> {
+export async function compressOldDecades(currentYear: number, worldId: string): Promise<void> {
   const cutoff = currentYear - 10;
 
   const oldAnnuals = await prisma.yearlyHeadline.findMany({
-    where: { year: { lt: cutoff }, type: HeadlineType.ANNUAL },
+    where: { world_id: worldId, year: { lt: cutoff }, type: HeadlineType.ANNUAL },
     orderBy: { year: 'asc' },
   });
 
   if (oldAnnuals.length === 0) return;
 
-  // Group by decade
   const byDecade = new Map<number, typeof oldAnnuals>();
   for (const h of oldAnnuals) {
     const ds = Math.floor(h.year / 10) * 10;
@@ -245,7 +261,6 @@ export async function compressOldDecades(currentYear: number): Promise<void> {
   }
 
   for (const [decadeStart, annuals] of byDecade) {
-    // Group by category within this decade
     const byCategory = new Map<HeadlineCategory, typeof annuals>();
     for (const h of annuals) {
       if (!byCategory.has(h.category)) byCategory.set(h.category, []);
@@ -253,24 +268,23 @@ export async function compressOldDecades(currentYear: number): Promise<void> {
     }
 
     for (const [category, catAnnuals] of byCategory) {
-      // Check if decade summary already exists
       const existing = await prisma.yearlyHeadline.findUnique({
-        where: { year_type_category: { year: decadeStart, type: HeadlineType.DECADE, category } },
+        where: { world_id_year_type_category: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category } },
       });
       if (existing) continue;
 
       const summary = await buildDecadeSummary(decadeStart, category, catAnnuals);
 
       await prisma.yearlyHeadline.upsert({
-        where: { year_type_category: { year: decadeStart, type: HeadlineType.DECADE, category } },
-        create: { year: decadeStart, type: HeadlineType.DECADE, category, ...summary },
+        where: { world_id_year_type_category: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category } },
+        create: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category, ...summary },
         update: summary,
       });
     }
 
-    // Delete the annual entries for this decade
     await prisma.yearlyHeadline.deleteMany({
       where: {
+        world_id: worldId,
         year: { gte: decadeStart, lt: decadeStart + 10 },
         type: HeadlineType.ANNUAL,
       },

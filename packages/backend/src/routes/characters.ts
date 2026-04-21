@@ -14,7 +14,7 @@ import {
   type CriminalRecord,
 } from '../types/person';
 import { generateCharacter, ARCHETYPE_LABELS } from '../services/character-gen.service';
-import { getWorldState } from '../services/time.service';
+import { getActiveWorld } from '../services/time.service';
 import { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -25,8 +25,11 @@ router.get('/', async (req: Request, res: Response) => {
   const limit = Math.min(100, parseInt(req.query.limit as string) || 20);
   const skip  = (page - 1) * limit;
 
+  const world = await getActiveWorld();
+
   const [persons, total] = await Promise.all([
     prisma.person.findMany({
+      where:   { world_id: world.id },
       skip,
       take:    limit,
       orderBy: { updated_at: 'desc' },
@@ -41,7 +44,7 @@ router.get('/', async (req: Request, res: Response) => {
         global_scores: true,
       },
     }),
-    prisma.person.count(),
+    prisma.person.count({ where: { world_id: world.id } }),
   ]);
 
   res.json({
@@ -61,7 +64,7 @@ router.get('/:id', async (req: Request, res: Response) => {
 
   res.json({
     ...person,
-    criminal_record: person.criminal_record as CriminalRecord[],
+    criminal_record: person.criminal_record as unknown as CriminalRecord[],
     created_at: person.created_at.toISOString(),
     updated_at: person.updated_at.toISOString(),
     memory_bank: person.memory_bank.map((m) => ({
@@ -72,21 +75,21 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 // ── GET /api/characters/seed ─────────────────────────────────
-// Seeds 100 random characters if the world is empty, no-op otherwise.
 router.get('/seed', async (_req: Request, res: Response) => {
-  const existing = await prisma.person.count();
+  const world = await getActiveWorld();
+  const existing = await prisma.person.count({ where: { world_id: world.id } });
   if (existing > 0) {
     res.json({ seeded: false, count: existing });
     return;
   }
 
-  const world      = await getWorldState();
   const worldTraits = world.global_traits as Record<string, number>;
   const people = Array.from({ length: 100 }, () => generateCharacter(undefined, worldTraits));
 
   const result = await prisma.person.createMany({
     data: people.map(p => ({
       ...p,
+      world_id:        world.id,
       criminal_record: p.criminal_record as Prisma.InputJsonValue,
       traits:          p.traits          as Prisma.InputJsonValue,
       global_scores:   p.global_scores   as Prisma.InputJsonValue,
@@ -105,13 +108,14 @@ router.post('/bulk', validate(BulkCreateSchema), async (req: Request, res: Respo
     return;
   }
 
-  const world       = await getWorldState();
+  const world       = await getActiveWorld();
   const worldTraits = world.global_traits as Record<string, number>;
   const people = Array.from({ length: count }, () => generateCharacter(archetype, worldTraits));
 
   const result = await prisma.person.createMany({
     data: people.map(p => ({
       ...p,
+      world_id:        world.id,
       criminal_record: p.criminal_record as Prisma.InputJsonValue,
       traits:          p.traits          as Prisma.InputJsonValue,
       global_scores:   p.global_scores   as Prisma.InputJsonValue,
@@ -125,24 +129,25 @@ router.post('/bulk', validate(BulkCreateSchema), async (req: Request, res: Respo
 // ── POST /api/characters ─────────────────────────────────────
 router.post('/', validate(CreatePersonSchema), async (req: Request, res: Response) => {
   const { criminal_record, ...rest } = req.body;
+  const world = await getActiveWorld();
 
   const person = await prisma.person.create({
     data: {
       ...rest,
+      world_id:        world.id,
       criminal_record: (criminal_record ?? []) as Prisma.InputJsonValue,
     },
   });
 
   res.status(201).json({
     ...person,
-    criminal_record: person.criminal_record as CriminalRecord[],
+    criminal_record: person.criminal_record as unknown as CriminalRecord[],
     created_at: person.created_at.toISOString(),
     updated_at: person.updated_at.toISOString(),
   });
 });
 
 // ── POST /api/characters/:id/delta ───────────────────────────
-// Applies a simulation delta (with rules enforced unless force=true)
 router.post(
   '/:id/delta',
   validate(DeltaRequestSchema),
@@ -167,7 +172,6 @@ router.post(
   validate(CriminalRecordRequestSchema),
   async (req: Request, res: Response) => {
     const { record, event_summary } = req.body;
-
     const result = await addCriminalRecord(req.params.id, record, event_summary);
     res.json(result);
   },

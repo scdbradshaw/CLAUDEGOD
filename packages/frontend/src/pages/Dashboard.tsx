@@ -6,9 +6,12 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { api } from '../api/client';
-import type { CharacterListItem, TickResult } from '@civ-sim/shared';
+import type { CharacterListItem, TickResult, WorldListItem } from '@civ-sim/shared';
 import CharacterCard from '../components/CharacterCard';
 import TimeControls from '../components/TimeControls';
+import BulkFilterPanel from '../components/BulkFilterPanel';
+import ForceInteractionPanel from '../components/ForceInteractionPanel';
+import ManualEventPanel from '../components/ManualEventPanel';
 
 // ── Tick Controls ─────────────────────────────────────────────
 
@@ -154,6 +157,13 @@ export default function Dashboard() {
     refetchInterval: 10_000,
   });
 
+  const { data: worlds } = useQuery({
+    queryKey: ['worlds'],
+    queryFn:  api.worlds.list,
+    staleTime: 30_000,
+  });
+  const activeWorld = worlds?.find((w: WorldListItem) => w.is_active) ?? null;
+
   // Auto-seed 100 souls if the world is empty
   useEffect(() => {
     if (data && data.total === 0) {
@@ -184,13 +194,18 @@ export default function Dashboard() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="font-display text-3xl font-bold text-gold tracking-widest uppercase leading-tight">
-              The Realm
+              {activeWorld ? activeWorld.name : 'The Realm'}
             </h1>
             <p className="text-[11px] text-muted mt-1 tracking-wide">
               {souls > 0
                 ? `${souls} soul${souls !== 1 ? 's' : ''} dwell here`
                 : 'No souls yet — the world awaits its first inhabitants'}
             </p>
+            {activeWorld && (
+              <p className="text-[10px] text-zinc-600 mt-0.5">
+                Year {activeWorld.current_year} · {activeWorld.population_tier}
+              </p>
+            )}
           </div>
 
           <Link to="/characters/new" className="btn-sim shrink-0 mt-1">
@@ -233,6 +248,9 @@ export default function Dashboard() {
           <TickControls />
           <TimeControls />
           <BulkSummon />
+          <BulkFilterPanel />
+          <ForceInteractionPanel />
+          <ManualEventPanel />
         </div>
 
         {/* Nav cards */}
@@ -268,6 +286,22 @@ export default function Dashboard() {
             <span className="text-2xl">✝</span>
             <span className="text-xs text-zinc-400 text-center leading-tight">The Fallen</span>
             <span className="text-[10px] text-zinc-600 text-center">Memorial</span>
+          </Link>
+          <Link
+            to="/rules"
+            className="panel flex-1 flex flex-col items-center justify-center gap-1 hover:border-amber-700 transition-colors py-4"
+          >
+            <span className="text-2xl">📖</span>
+            <span className="text-xs text-zinc-400 text-center leading-tight">Rule Library</span>
+            <span className="text-[10px] text-zinc-600 text-center">Rulesets</span>
+          </Link>
+          <Link
+            to="/worlds"
+            className="panel flex-1 flex flex-col items-center justify-center gap-1 hover:border-amber-700 transition-colors py-4"
+          >
+            <span className="text-2xl">🌐</span>
+            <span className="text-xs text-zinc-400 text-center leading-tight">World Designer</span>
+            <span className="text-[10px] text-zinc-600 text-center">Parallel Worlds</span>
           </Link>
         </div>
       </div>

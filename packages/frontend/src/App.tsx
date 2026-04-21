@@ -7,6 +7,8 @@ import Headlines       from './pages/Headlines';
 import Economy         from './pages/Economy';
 import Rip             from './pages/Rip';
 import World           from './pages/World';
+import RuleLibrary     from './pages/RuleLibrary';
+import WorldDesigner   from './pages/WorldDesigner';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -26,6 +28,8 @@ export default function App() {
           <Route path="/economy"             element={<Economy />} />
           <Route path="/rip"                 element={<Rip />} />
           <Route path="/world"               element={<World />} />
+          <Route path="/rules"               element={<RuleLibrary />} />
+          <Route path="/worlds"              element={<WorldDesigner />} />
         </Routes>
       </BrowserRouter>
     </QueryClientProvider>

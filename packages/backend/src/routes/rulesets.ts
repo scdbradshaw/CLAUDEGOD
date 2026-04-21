@@ -3,17 +3,18 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import type { RulesetDef } from '@civ-sim/shared';
 
 const router = Router();
 
 // ── Default starter ruleset ──────────────────────────────────
-// Built around the 5 default active trait categories:
-//   violence_morality, mental_fortitude, identity_pressure,
-//   social_survival, philosophy
+// Trait weights reference the 25 identity attributes defined in
+// IDENTITY_ATTRIBUTES. Any unknown trait key is silently skipped by
+// the engine, so rulesets can evolve ahead of the attribute schema.
 export const DEFAULT_RULESET: RulesetDef = {
-  version: 1,
+  version: 3,
 
   interaction_types: [
     {
@@ -21,13 +22,13 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Conflict',
       weight: 3,
       trait_weights: [
-        { trait: 'killing_threshold',            sign:  1 },
-        { trait: 'cruelty',                      sign:  1 },
-        { trait: 'mercy',                        sign: -1 },
-        { trait: 'vengefulness',                 sign:  1 },
-        { trait: 'fear_management',              sign:  1 },
-        { trait: 'breaking_point',               sign: -1 },
-        { trait: 'despair_resistance',           sign:  1 },
+        { trait: 'combat',        sign:  1 },
+        { trait: 'strength',      sign:  1 },
+        { trait: 'courage',       sign:  1 },
+        { trait: 'cunning',       sign:  1 },
+        { trait: 'discipline',    sign:  1 },
+        { trait: 'empathy',       sign: -1 },
+        { trait: 'resilience',    sign:  1 },
       ],
       global_amplifiers: [
         { key: 'war.morale',            multiplier: 0.30 },
@@ -41,13 +42,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Trade',
       weight: 3,
       trait_weights: [
-        { trait: 'alliance_building',   sign:  1 },
-        { trait: 'loyalty',             sign:  1 },
-        { trait: 'betrayal_detection',  sign:  1 },
-        { trait: 'group_navigation',    sign:  1 },
-        { trait: 'justice_belief',      sign:  1 },
-        { trait: 'mercy',               sign:  1 },
-        { trait: 'nihilism',            sign: -1 },
+        { trait: 'persuasion',    sign:  1 },
+        { trait: 'charisma',      sign:  1 },
+        { trait: 'intelligence',  sign:  1 },
+        { trait: 'cunning',       sign:  1 },
+        { trait: 'street_smarts', sign:  1 },
+        { trait: 'honesty',       sign:  1 },
       ],
       global_amplifiers: [
         { key: 'scarcity.material_wealth',    multiplier: 0.30 },
@@ -61,14 +61,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Bond',
       weight: 2,
       trait_weights: [
-        { trait: 'loyalty',             sign:  1 },
-        { trait: 'alliance_building',   sign:  1 },
-        { trait: 'mercy',               sign:  1 },
-        { trait: 'justice_belief',      sign:  1 },
-        { trait: 'group_navigation',    sign:  1 },
-        { trait: 'betrayal_detection',  sign:  1 },
-        { trait: 'killing_threshold',   sign: -1 },
-        { trait: 'nihilism',            sign: -1 },
+        { trait: 'empathy',    sign:  1 },
+        { trait: 'charisma',   sign:  1 },
+        { trait: 'humor',      sign:  1 },
+        { trait: 'honesty',    sign:  1 },
+        { trait: 'discipline', sign:  1 },
+        { trait: 'cunning',    sign: -1 },
       ],
       global_amplifiers: [
         { key: 'faith.spiritual_comfort', multiplier: 0.30 },
@@ -82,14 +80,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Survival',
       weight: 2,
       trait_weights: [
-        { trait: 'despair_resistance',              sign:  1 },
-        { trait: 'isolation_tolerance',             sign:  1 },
-        { trait: 'trauma_recovery',                 sign:  1 },
-        { trait: 'fear_management',                 sign:  1 },
-        { trait: 'death_acceptance',                sign:  1 },
-        { trait: 'loyalty',                         sign:  1 },
-        { trait: 'breaking_point',                  sign: -1 },
-        { trait: 'self_preservation_vs_principle',  sign:  1 },
+        { trait: 'endurance',     sign:  1 },
+        { trait: 'resilience',    sign:  1 },
+        { trait: 'survival',      sign:  1 },
+        { trait: 'courage',       sign:  1 },
+        { trait: 'street_smarts', sign:  1 },
+        { trait: 'agility',       sign:  1 },
       ],
       global_amplifiers: [
         { key: 'scarcity.food_supply',     multiplier: 0.40 },
@@ -103,13 +99,13 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Dominance',
       weight: 2,
       trait_weights: [
-        { trait: 'dignity_retention',               sign:  1 },
-        { trait: 'shame_threshold',                 sign:  1 },
-        { trait: 'killing_threshold',               sign:  1 },
-        { trait: 'vengefulness',                    sign:  1 },
-        { trait: 'nihilism',                        sign:  1 },
-        { trait: 'breaking_point',                  sign: -1 },
-        { trait: 'self_preservation_vs_principle',  sign: -1 },
+        { trait: 'leadership', sign:  1 },
+        { trait: 'ambition',   sign:  1 },
+        { trait: 'charisma',   sign:  1 },
+        { trait: 'combat',     sign:  1 },
+        { trait: 'cunning',    sign:  1 },
+        { trait: 'persuasion', sign:  1 },
+        { trait: 'empathy',    sign: -1 },
       ],
       global_amplifiers: [
         { key: 'tyranny.oppression',      multiplier: 0.30 },
@@ -120,69 +116,143 @@ export const DEFAULT_RULESET: RulesetDef = {
   ],
 
   // Ordered highest → lowest. First match wins.
+  // Each band has *two* effect packets — subject_effect and antagonist_effect —
+  // so world rules can modify the two sides of an interaction independently
+  // (e.g. high Tyranny: subject gains more, antagonist suffers more).
   outcome_bands: [
     {
-      label:            'legendary',
-      min_score:         400,
-      stat_delta:       [25, 40],
-      affects_stats:    ['health', 'happiness', 'reputation'],
+      label:     'legendary',
+      min_score:  400,
+      magnitude:  1.0,
+      subject_effect: {
+        stat_delta:    [25, 40],
+        affects_stats: ['health', 'happiness', 'reputation', 'influence'],
+        trait_deltas:  { courage: 2, ambition: 1, resilience: 1 },
+      },
+      antagonist_effect: {
+        stat_delta:    [-25, -10],
+        affects_stats: ['reputation', 'happiness'],
+      },
       can_die:          false,
       creates_memory:   true,
       creates_headline: true,
     },
     {
-      label:            'great',
-      min_score:         200,
-      stat_delta:       [10, 25],
-      affects_stats:    ['health', 'happiness', 'reputation'],
+      label:     'great',
+      min_score:  200,
+      magnitude:  0.75,
+      subject_effect: {
+        stat_delta:    [10, 25],
+        affects_stats: ['health', 'happiness', 'reputation'],
+      },
+      antagonist_effect: {
+        stat_delta:    [-10, -3],
+        affects_stats: ['reputation', 'happiness'],
+      },
       can_die:          false,
       creates_memory:   true,
       creates_headline: false,
     },
     {
-      label:            'minor_good',
-      min_score:          50,
-      stat_delta:        [3, 10],
-      affects_stats:    ['happiness'],
+      label:     'minor_good',
+      min_score:   50,
+      magnitude:  0.35,
+      subject_effect: {
+        stat_delta:    [3, 10],
+        affects_stats: ['happiness'],
+      },
+      antagonist_effect: {
+        stat_delta:    [-3, 0],
+        affects_stats: ['happiness'],
+      },
       can_die:          false,
       creates_memory:   false,
       creates_headline: false,
     },
     {
-      label:            'neutral',
-      min_score:         -50,
-      stat_delta:        [-2, 2],
-      affects_stats:    [],
+      label:     'neutral',
+      min_score:  -50,
+      magnitude:  0.0,
+      subject_effect: {
+        stat_delta:    [-2, 2],
+        affects_stats: [],
+      },
       can_die:          false,
       creates_memory:   false,
       creates_headline: false,
     },
     {
-      label:            'minor_bad',
-      min_score:        -200,
-      stat_delta:       [-15, -5],
-      affects_stats:    ['happiness', 'health'],
+      label:     'minor_bad',
+      min_score: -200,
+      magnitude:  0.35,
+      subject_effect: {
+        stat_delta:    [-15, -5],
+        affects_stats: ['happiness', 'health'],
+      },
+      antagonist_effect: {
+        stat_delta:    [-3, 3],
+        affects_stats: ['happiness'],
+      },
       can_die:          false,
       creates_memory:   false,
       creates_headline: false,
     },
     {
-      label:            'severe',
-      min_score:        -400,
-      stat_delta:       [-30, -15],
-      affects_stats:    ['health', 'happiness', 'reputation'],
+      label:     'severe',
+      min_score: -400,
+      magnitude:  0.75,
+      subject_effect: {
+        stat_delta:    [-30, -15],
+        affects_stats: ['health', 'happiness', 'reputation'],
+        trait_deltas:  { courage: -1, resilience: -1 },
+      },
+      antagonist_effect: {
+        stat_delta:    [-5, 5],
+        affects_stats: ['reputation'],
+      },
       can_die:          false,
       creates_memory:   true,
       creates_headline: false,
     },
     {
-      label:            'catastrophic',
-      min_score:        -Infinity,
-      stat_delta:       [-60, -30],
-      affects_stats:    ['health', 'happiness', 'reputation'],
+      label:     'catastrophic',
+      min_score: -Infinity,
+      magnitude:  1.0,
+      subject_effect: {
+        stat_delta:    [-60, -30],
+        affects_stats: ['health', 'happiness', 'reputation'],
+        trait_deltas:  { courage: -2, resilience: -2, empathy: -1 },
+      },
+      antagonist_effect: {
+        stat_delta:    [-15, 5],
+        affects_stats: ['reputation', 'morality'],
+      },
       can_die:          true,
       creates_memory:   true,
       creates_headline: true,
+    },
+  ],
+
+  // Applied to every living person each tick. Formula per stat:
+  //   drift = clamp(base + Σ(global[key] × multiplier), min, max)
+  passive_drifts: [
+    {
+      stat: 'health',
+      base:  0,
+      inputs: [
+        { key: 'plague.infection_rate', multiplier: 0.05 },
+        { key: 'scarcity.food_supply',  multiplier: 0.01 },
+      ],
+      min: -5, max: 2,
+    },
+    {
+      stat: 'happiness',
+      base:  0,
+      inputs: [
+        { key: 'faith.spiritual_comfort', multiplier: 0.02 },
+        { key: 'tyranny.oppression',      multiplier: 0.02 },
+      ],
+      min: -3, max: 2,
     },
   ],
 };
@@ -200,6 +270,19 @@ async function ensureDefaultExists() {
         rules:       DEFAULT_RULESET as object,
       },
     });
+    return;
+  }
+  // Auto-upgrade the system-owned "Default" ruleset if it predates DEFAULT_RULESET.version.
+  // User-authored rulesets are never touched.
+  const sysDefault = await prisma.ruleset.findFirst({ where: { name: 'Default' } });
+  if (sysDefault) {
+    const existing = sysDefault.rules as unknown as { version?: number };
+    if (!existing.version || existing.version < DEFAULT_RULESET.version) {
+      await prisma.ruleset.update({
+        where: { id: sysDefault.id },
+        data:  { rules: DEFAULT_RULESET as object },
+      });
+    }
   }
 }
 
@@ -264,6 +347,20 @@ router.post('/:id/activate', async (req: Request, res: Response) => {
   ]);
   const ruleset = await prisma.ruleset.findUniqueOrThrow({ where: { id: req.params.id } });
   res.json(ruleset);
+});
+
+// ── POST /api/rulesets/:id/clone ────────────────────────────
+router.post('/:id/clone', async (req: Request, res: Response) => {
+  const source = await prisma.ruleset.findUniqueOrThrow({ where: { id: req.params.id } });
+  const clone = await prisma.ruleset.create({
+    data: {
+      name:        `${source.name} (copy)`,
+      description: source.description,
+      is_active:   false,
+      rules:       source.rules as Prisma.InputJsonValue,
+    },
+  });
+  res.status(201).json(clone);
 });
 
 // ── DELETE /api/rulesets/:id ─────────────────────────────────

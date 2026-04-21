@@ -9,7 +9,7 @@ import { api } from '../api/client';
 
 const NUMERIC_STATS = [
   'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence',
-  'age', 'lifespan', 'wealth',
+  'age', 'death_age', 'wealth',
 ] as const;
 
 type NumericStat = typeof NUMERIC_STATS[number];

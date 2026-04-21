@@ -5,13 +5,13 @@
 import { Router, Request, Response } from 'express';
 import prisma from '../db/client';
 import { DEFAULT_GLOBAL_TRAIT_MULTIPLIERS, DEFAULT_GLOBAL_TRAITS, GLOBAL_TRAITS } from '@civ-sim/shared';
-import { getWorldState } from '../services/time.service';
+import { getActiveWorld } from '../services/time.service';
 
 const router = Router();
 
 // ── GET /api/economy ─────────────────────────────────────────
 router.get('/', async (_req: Request, res: Response) => {
-  const world = await getWorldState();
+  const world = await getActiveWorld();
   const multipliers = Object.keys((world.global_trait_multipliers as object) ?? {}).length
     ? world.global_trait_multipliers as Record<string, number>
     : DEFAULT_GLOBAL_TRAIT_MULTIPLIERS;
@@ -42,11 +42,11 @@ router.post('/push', async (req: Request, res: Response) => {
     return;
   }
 
-  const world    = await getWorldState();
+  const world    = await getActiveWorld();
   const delta    = direction === 'up' ? 0.005 : -0.005;
   const newTrend = Math.max(-0.10, Math.min(0.20, world.market_trend + delta));
 
-  const updated = await prisma.worldState.update({
+  const updated = await prisma.world.update({
     where: { id: world.id },
     data:  { market_trend: newTrend },
   });
@@ -67,8 +67,8 @@ router.patch('/volatility', async (req: Request, res: Response) => {
     return;
   }
 
-  const world   = await getWorldState();
-  const updated = await prisma.worldState.update({
+  const world   = await getActiveWorld();
+  const updated = await prisma.world.update({
     where: { id: world.id },
     data:  { market_volatility: volatility },
   });
@@ -99,13 +99,13 @@ router.patch('/multipliers', async (req: Request, res: Response) => {
     }
   }
 
-  const world   = await getWorldState();
+  const world   = await getActiveWorld();
   const existing = Object.keys((world.global_trait_multipliers as object) ?? {}).length
     ? world.global_trait_multipliers as Record<string, number>
     : { ...DEFAULT_GLOBAL_TRAIT_MULTIPLIERS };
 
   const merged  = { ...existing, ...cleaned };
-  const updated = await prisma.worldState.update({
+  const updated = await prisma.world.update({
     where: { id: world.id },
     data:  { global_trait_multipliers: merged },
   });
@@ -149,13 +149,13 @@ router.patch('/global-traits', async (req: Request, res: Response) => {
     }
   }
 
-  const world   = await getWorldState();
+  const world   = await getActiveWorld();
   const existing = Object.keys((world.global_traits as object) ?? {}).length
     ? world.global_traits as Record<string, number>
     : { ...DEFAULT_GLOBAL_TRAITS };
 
   const merged  = { ...existing, ...cleaned };
-  const updated = await prisma.worldState.update({
+  const updated = await prisma.world.update({
     where: { id: world.id },
     data:  { global_traits: merged },
   });

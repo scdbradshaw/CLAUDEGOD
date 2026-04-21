@@ -2,49 +2,39 @@
 // SHARED TYPES — used by both backend and frontend
 // ============================================================
 
-// --------------- Trait system ---------------
+// --------------- Narrative Tone ---------------
 
-/** All 25 categories, each with exactly 4 traits (100 total) */
-export const TRAIT_CATEGORIES = {
-  physical_vitality:    ['strength', 'endurance', 'immunity', 'pain_tolerance'],
-  combat:               ['aggression', 'combat_skill', 'tactical_mind', 'weapon_affinity'],
-  hunting_tracking:     ['tracking', 'stealth', 'patience', 'prey_instinct'],
-  survival_craft:       ['foraging', 'fire_mastery', 'tool_making', 'shelter_building'],
-  senses_perception:    ['awareness', 'night_vision', 'danger_sense', 'pattern_recognition'],
-  endurance_grit:       ['hunger_tolerance', 'thirst_tolerance', 'cold_tolerance', 'sleep_deprivation_resistance'],
-  speed_agility:        ['reflexes', 'agility', 'stamina', 'escape_instinct'],
-  healing_medicine:     ['wound_recovery', 'disease_resistance', 'medical_knowledge', 'poison_tolerance'],
-  navigation_territory: ['wayfinding', 'map_memory', 'territory_sense', 'weather_reading'],
-  resource_management:  ['stockpiling', 'rationing', 'scarcity_memory', 'waste_aversion'],
-  threat_assessment:    ['predator_awareness', 'human_threat_reading', 'ambush_sense', 'risk_calculation'],
-  adaptation:           ['environmental_flexibility', 'diet_flexibility', 'climate_tolerance', 'skill_acquisition_speed'],
-  mental_fortitude:     ['despair_resistance', 'isolation_tolerance', 'trauma_recovery', 'fear_management'],
-  instinct:             ['fight_or_flight', 'gut_accuracy', 'herd_instinct', 'survival_drive'],
-  social_survival:      ['alliance_building', 'loyalty', 'betrayal_detection', 'group_navigation'],
-  leadership:           ['command_presence', 'decision_speed', 'sacrifice_willingness', 'group_cohesion'],
-  deception_evasion:    ['lying_ability', 'concealment', 'identity_masking', 'misdirection'],
-  dominance_submission: ['dominance_drive', 'submission_threshold', 'territory_aggression', 'status_reading'],
-  reproduction_legacy:  ['fertility', 'mate_selection', 'offspring_investment', 'bloodline_pride'],
-  wealth_trade:         ['accumulation_drive', 'negotiation', 'barter_skill', 'debt_tolerance'],
-  violence_morality:    ['killing_threshold', 'cruelty', 'mercy', 'vengefulness'],
-  risk_courage:         ['risk_tolerance', 'courage_under_threat', 'recklessness', 'boldness'],
-  identity_pressure:    ['shame_threshold', 'dignity_retention', 'self_preservation_vs_principle', 'breaking_point'],
-  culture_meaning:      ['ritual_importance', 'oral_tradition', 'music', 'myth_making'],
-  philosophy:           ['death_acceptance', 'nihilism', 'justice_belief', 'destiny_belief'],
+/**
+ * Voice routing for Claude narration. Determines the voice prefix
+ * injected into headline / memory / decade prompts.
+ *
+ * - `tabloid`   — scandals, rises/falls, affairs, forced interactions
+ * - `literary`  — deaths, births, quiet beats, natural old-age passing
+ * - `epic`      — group founded/dissolved/split, decade summaries
+ * - `reportage` — bulk chaos (plague, nukes, bulk God Mode filter actions)
+ * - `neutral`   — fallback for routine low-magnitude events; terse factual
+ */
+export type Tone = 'tabloid' | 'literary' | 'epic' | 'reportage' | 'neutral';
+
+export const TONES: readonly Tone[] = ['tabloid', 'literary', 'epic', 'reportage', 'neutral'];
+
+// --------------- Identity Attribute system ---------------
+
+/** 25 identity attributes across 5 categories — the core of who a person IS */
+export const IDENTITY_ATTRIBUTES = {
+  physical:  ['beauty', 'health', 'strength', 'endurance', 'agility'],
+  mental:    ['intelligence', 'creativity', 'memory', 'curiosity', 'cunning'],
+  social:    ['charisma', 'empathy', 'humor', 'leadership', 'persuasion'],
+  character: ['ambition', 'discipline', 'honesty', 'courage', 'resilience'],
+  skills:    ['combat', 'craftsmanship', 'artistry', 'street_smarts', 'survival'],
 } as const;
 
-export type TraitCategoryKey = keyof typeof TRAIT_CATEGORIES;
+export type IdentityCategoryKey = keyof typeof IDENTITY_ATTRIBUTES;
 
-/** The 5 categories active by default */
-export const DEFAULT_ACTIVE_CATEGORIES: TraitCategoryKey[] = [
-  'violence_morality',
-  'mental_fortitude',
-  'identity_pressure',
-  'social_survival',
-  'philosophy',
-];
+/** Flat list of all 25 identity attribute keys */
+export const ALL_IDENTITY_KEYS = Object.values(IDENTITY_ATTRIBUTES).flat() as string[];
 
-/** Flat map of all 100 trait keys → values */
+/** Flat map of all 25 identity attribute keys → values (0-100) */
 export type TraitSet = Record<string, number>;
 
 // --------------- Global Trait system ---------------
@@ -186,17 +176,80 @@ export interface InteractionTypeDef {
   global_amplifiers: GlobalAmplifier[];
 }
 
+/**
+ * Effect packet — a bundle of stat changes (and optional trait drifts)
+ * applied to one side of an interaction.
+ *
+ * `stat_delta` is a [min,max] range rolled once per application; the rolled
+ * magnitude is applied to every key in `affects_stats`.
+ *
+ * `trait_deltas`, when present, applies **permanent** changes to identity
+ * attributes — this is the mechanism for trauma / triumph modifiers
+ * (Phase 1 step 8). Values are small (±1 to ±3). Unknown keys are skipped.
+ */
+export interface EffectPacket {
+  stat_delta:    [number, number];
+  affects_stats: string[];
+  trait_deltas?: Record<string, number>;
+}
+
 export interface OutcomeBand {
   label:            string;
   /** score must be >= this to qualify (ordered highest → lowest) */
   min_score:        number;
-  /** [min, max] applied to affected stats — negative for bad outcomes */
-  stat_delta:       [number, number];
-  /** which core stats can be modified */
-  affects_stats:    string[];
+  /** 0-1 relative intensity — drives memory decay + trauma strength */
+  magnitude:        number;
+  /** Effect applied to the subject (protagonist) of the interaction. */
+  subject_effect:    EffectPacket;
+  /** Effect applied to the antagonist. Missing = mirror of subject_effect. */
+  antagonist_effect?: EffectPacket;
   can_die:          boolean;
   creates_memory:   boolean;
   creates_headline: boolean;
+
+  /**
+   * Optional ruleset-level tone override for this band. If present, memories
+   * and any related headline generated off this band use this voice.
+   * Otherwise the tone service falls back to category-based routing.
+   */
+  tone?:            Tone;
+
+  /**
+   * Event-driven group formation. When present, triggering this band attempts
+   * to spawn a new group founded by the subject (or antagonist, per `founder`).
+   * Capability gate is bypassed — the ruleset author opted in explicitly.
+   */
+  creates_group?: {
+    kind:            'religion' | 'faction';
+    /** Who becomes the founder. Defaults to 'subject'. */
+    founder?:        'subject' | 'antagonist';
+    /** Optional name prefix, e.g. "Cult of" or "Order of". */
+    name_prefix?:    string;
+    /** How to derive the virus profile. Currently only founder_standouts. */
+    profile_source?: 'founder_standouts';
+  };
+
+  /** @deprecated use subject_effect.stat_delta — retained for legacy rulesets */
+  stat_delta?:      [number, number];
+  /** @deprecated use subject_effect.affects_stats */
+  affects_stats?:   string[];
+}
+
+/**
+ * One passive drift rule — a per-tick auto-adjustment on a person stat
+ * computed from global trait values. Unknown stat keys or global keys
+ * are silently skipped so the engine stays fully data-driven.
+ */
+export interface PassiveDriftRule {
+  /** Person stat to drift (e.g. 'health', 'happiness'). Unknown keys are skipped. */
+  stat:       string;
+  /** Constant added before scaling by inputs (default 0) */
+  base?:      number;
+  /** Global trait contributions — value * multiplier is summed */
+  inputs:     { key: string; multiplier: number }[];
+  /** Clamp final drift to this range */
+  min:        number;
+  max:        number;
 }
 
 export interface RulesetDef {
@@ -204,6 +257,8 @@ export interface RulesetDef {
   interaction_types: InteractionTypeDef[];
   /** ordered highest min_score → lowest — first match wins */
   outcome_bands:     OutcomeBand[];
+  /** Optional per-tick passive drifts applied to every living person */
+  passive_drifts?:   PassiveDriftRule[];
 }
 
 // --------------- Global trait multipliers ---------------
@@ -308,8 +363,9 @@ export interface Person {
   sexuality:           Sexuality;
   gender:              string;
   race:                string;
+  occupation:          string;
   age:                 number;   // years (int)
-  lifespan:            number;   // expected max age (int)
+  death_age:           number;   // age at which natural death occurs (int)
 
   // ── Social ───────────────────────────────────────────────
   relationship_status: string;
@@ -327,7 +383,7 @@ export interface Person {
   // ── Other ────────────────────────────────────────────────
   physical_appearance: string;
   wealth:              number;   // float, no upper bound
-  traits:              TraitSet; // all 100 survival/philosophy traits (0-100)
+  traits:              TraitSet; // 25 identity attributes (0-100) — beauty, strength, cunning, etc.
   /** Personal global force scores, keyed by "force.child" e.g. "war.morale" */
   global_scores:       Record<string, number>;
 
@@ -354,7 +410,142 @@ export interface MemoryEntry {
   emotional_impact: EmotionalImpact;
   /** The delta that triggered this memory (partial snapshot of changed fields) */
   delta_applied:    PersonDelta;
+  /** 0.0-1.0 — how extreme the triggering outcome was. Top/bottom band = 1.0. */
+  magnitude:        number;
+  /** Counterparty person id for grudge/loyalty weighting (null for solo events). */
+  counterparty_id:  string | null;
   timestamp:        string;   // ISO-8601
+  world_year:       number | null;
+}
+
+// --------------- Inner Circle ---------------
+
+export type InnerCircleRelation =
+  | 'parent'
+  | 'child'
+  | 'sibling'
+  | 'spouse'
+  | 'lover'
+  | 'close_friend'
+  | 'rival'
+  | 'enemy';
+
+export interface InnerCircleLink {
+  id:            string;
+  owner_id:      string;
+  target_id:     string;
+  relation_type: InnerCircleRelation;
+  bond_strength: number;   // 0-100
+  created_at:    string;
+  updated_at:    string;
+}
+
+// --------------- Groups (Religions, Factions) ---------------
+
+export type GroupOrigin = 'emergent' | 'player' | 'event';
+
+/**
+ * Virus profile — a map of trait/global-score keys to threshold rules.
+ * Any key can be referenced — identity attributes (e.g. 'charisma'),
+ * global score keys (e.g. 'faith.devotion'), or future extensions.
+ * Unknown keys are silently skipped by the matching engine.
+ *
+ * Example:
+ *   {
+ *     "charisma":        { "min": 60 },
+ *     "faith.devotion":  { "min": 70 },
+ *     "morality":        { "min": 20, "max": 80 }
+ *   }
+ */
+export interface VirusThreshold {
+  min?: number;
+  max?: number;
+}
+export type VirusProfile = Record<string, VirusThreshold>;
+
+export interface Religion {
+  id:               string;
+  name:             string;
+  description:      string | null;
+  founder_id:       string | null;
+  origin:           GroupOrigin;
+  tolerance:        number;
+  virus_profile:    VirusProfile;
+  founded_year:     number;
+  is_active:        boolean;
+  dissolved_year:   number | null;
+  dissolved_reason: string | null;
+  created_at:       string;
+  updated_at:       string;
+}
+
+export interface ReligionMembership {
+  id:          string;
+  religion_id: string;
+  person_id:   string;
+  joined_year: number;
+  alignment:   number;
+  created_at:  string;
+  updated_at:  string;
+}
+
+export interface Faction {
+  id:               string;
+  name:             string;
+  description:      string | null;
+  founder_id:       string | null;
+  leader_id:        string | null;
+  origin:           GroupOrigin;
+  tolerance:        number;
+  virus_profile:    VirusProfile;
+  founded_year:     number;
+  is_active:        boolean;
+  dissolved_year:   number | null;
+  dissolved_reason: string | null;
+  split_from_id:    string | null;
+  created_at:       string;
+  updated_at:       string;
+}
+
+export interface FactionMembership {
+  id:                    string;
+  faction_id:            string;
+  person_id:             string;
+  joined_year:           number;
+  alignment:             number;
+  split_pressure_ticks:  number;
+  created_at:            string;
+  updated_at:            string;
+}
+
+// --------------- World (Phase 4) ---------------
+
+export type PopulationTier = 'intimate' | 'town' | 'civilization';
+
+export interface World {
+  id:                       string;
+  name:                     string;
+  description:              string | null;
+  is_active:                boolean;
+  archived_at:              string | null;
+  population_tier:          PopulationTier;
+  ruleset_id:               string | null;
+  current_year:             number;
+  tick_count:               number;
+  total_deaths:             number;
+  market_index:             number;
+  market_trend:             number;
+  market_volatility:        number;
+  global_traits:            Record<string, number>;
+  global_trait_multipliers: Record<string, number>;
+  created_at:               string;
+  updated_at:               string;
+}
+
+/** Returned by GET /api/worlds (list view — adds population + ruleset_name) */
+export interface WorldListItem extends Omit<World, 'global_traits' | 'global_trait_multipliers'> {
+  population:   number;
+  ruleset_name: string | null;
 }
 
 // --------------- Delta / Mutation types ---------------
@@ -408,4 +599,65 @@ export interface PaginatedResponse<T> {
   total: number;
   page:  number;
   limit: number;
+}
+
+// --------------- Bulk Filter Actions ---------------
+
+/** Numeric comparison operators */
+type NumericOp = 'lt' | 'lte' | 'gt' | 'gte';
+
+/**
+ * One filter clause. All clauses in a FilterQuery are AND-composed.
+ *
+ * Scalar fields: age, health, morality, happiness, reputation, influence,
+ *   intelligence, wealth
+ * Demographic fields: race, occupation, religion, gender
+ * JSONB dot-paths: trait.<key>  (identity attributes, 0-100)
+ *                  global_score.<key>  (e.g. "war.morale")
+ */
+export type FilterClause =
+  | { field: 'age' | 'health' | 'morality' | 'happiness' | 'reputation' | 'influence' | 'intelligence' | 'wealth'; op: NumericOp; value: number }
+  | { field: 'age' | 'health' | 'morality' | 'happiness' | 'reputation' | 'influence' | 'intelligence' | 'wealth'; op: 'between'; min: number; max: number }
+  | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'eq'; value: string }
+  | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'in'; values: string[] }
+  | { field: `trait.${string}`; op: NumericOp; value: number }
+  | { field: `trait.${string}`; op: 'between'; min: number; max: number }
+  | { field: `global_score.${string}`; op: NumericOp; value: number }
+  | { field: `global_score.${string}`; op: 'between'; min: number; max: number };
+
+/** AND-composed list of filter clauses */
+export type FilterQuery = FilterClause[];
+
+/**
+ * One field in the bulk delta.
+ * mode 'set'   → overwrite with exact value
+ * mode 'nudge' → add signed value to current (clamped after application)
+ */
+export interface BulkDeltaField {
+  mode:  'set' | 'nudge';
+  value: number;
+}
+
+/**
+ * Request body for POST /api/god-mode/bulk
+ *
+ * `delta` keys are person field names (e.g. "health", "wealth") or dotted
+ * trait paths (e.g. "trait.charisma"). String demographic fields only accept
+ * mode 'set' and the value is ignored — use a separate string field instead.
+ *
+ * Numeric stats (health, morality, etc.) are clamped 0-100 after application.
+ * Wealth is unclamped. Trait values are clamped 0-100.
+ */
+export interface BulkActionRequest {
+  filters:          FilterQuery;
+  delta:            Record<string, BulkDeltaField>;
+  event_summary:    string;
+  emotional_impact: EmotionalImpact;
+}
+
+/** Response shape for POST /api/god-mode/bulk */
+export interface BulkActionResult {
+  matched:                number;
+  affected:               number;
+  memory_entries_created: number;
 }

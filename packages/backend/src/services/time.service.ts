@@ -3,19 +3,32 @@
 // Manages the world calendar — advance, rewind, and aging
 // ============================================================
 
+import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import { generateHeadlinesForYear, compressOldDecades } from './headlines.service';
-import { DEFAULT_ACTIVE_CATEGORIES, DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
+import { DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
 
-// ── World state (singleton) ────────────────────────────────────────────────
+// ── Active-world helper ────────────────────────────────────────────────────
 
-export async function getWorldState() {
-  let state = await prisma.worldState.findFirst();
-  if (!state) {
-    state = await prisma.worldState.create({
+/**
+ * Returns the currently active World. Creates a default one if none exists.
+ * This is the single source of truth used by every route that needs world state.
+ */
+export async function getActiveWorld() {
+  let world = await prisma.world.findFirst({ where: { is_active: true } });
+  if (!world) {
+    // Find any ruleset to attach, or leave null
+    const ruleset = await prisma.ruleset.findFirst({ where: { is_active: true } })
+      ?? await prisma.ruleset.findFirst();
+
+    world = await prisma.world.create({
       data: {
+        name:                     'Default World',
+        is_active:                true,
+        population_tier:          'intimate',
+        ruleset_id:               ruleset?.id ?? null,
         current_year:             1,
-        active_trait_categories:  DEFAULT_ACTIVE_CATEGORIES,
+        active_trait_categories:  [],
         global_traits:            DEFAULT_GLOBAL_TRAITS,
         global_trait_multipliers: DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
         tick_count:               0,
@@ -26,7 +39,12 @@ export async function getWorldState() {
       },
     });
   }
-  return state;
+  return world;
+}
+
+/** Convenience alias — returns just the id string */
+export async function getActiveWorldId(): Promise<string> {
+  return (await getActiveWorld()).id;
 }
 
 // ── Advance time ───────────────────────────────────────────────────────────
@@ -35,22 +53,26 @@ export async function advanceTime(years: number) {
   if (years < 1) throw new Error('Must advance at least 1 year');
   if (years > 500) throw new Error('Cannot advance more than 500 years at once');
 
-  const state = await getWorldState();
-  const startYear = state.current_year;
+  const world = await getActiveWorld();
+  const worldId = world.id;
+  const startYear = world.current_year;
 
-  // 1. Age all characters (capped at lifespan)
+  // 1. Age all characters in this world (capped at death_age)
   await prisma.$executeRaw`
     UPDATE persons
-    SET age = LEAST(age + ${years}, lifespan),
+    SET age = LEAST(age + ${years}, death_age),
         updated_at = NOW()
+    WHERE world_id = ${worldId}::uuid
   `;
 
-  // 2. Detect and record deaths (age reached lifespan, health still > 0)
-  const dying: Array<{ id: string; name: string; age: number; lifespan: number }> =
+  // 2. Detect and record deaths (age reached death_age, health still > 0)
+  const dying: Array<{ id: string; name: string; age: number; death_age: number }> =
     await prisma.$queryRaw`
-      SELECT id, name, age, lifespan
+      SELECT id, name, age, death_age
       FROM persons
-      WHERE age >= lifespan AND health > 0
+      WHERE world_id = ${worldId}::uuid
+        AND age >= death_age
+        AND health > 0
     `;
 
   for (const char of dying) {
@@ -66,34 +88,34 @@ export async function advanceTime(years: number) {
           emotional_impact: 'traumatic',
           delta_applied:   { health: -char.age },
           world_year:      startYear + years - 1,
+          tone:            'literary',
         },
       }),
     ]);
   }
 
   // 3. Advance world year
-  const newState = await prisma.worldState.update({
-    where: { id: state.id },
+  const updated = await prisma.world.update({
+    where: { id: worldId },
     data:  { current_year: startYear + years },
   });
 
-  // 4. Generate headlines for each year just completed
-  //    (cap at 10 years to avoid extremely long waits; rest get skipped)
+  // 4. Generate headlines for each year just completed (cap 10)
   const yearsToChronicle = Math.min(years, 10);
   const headlines: Awaited<ReturnType<typeof generateHeadlinesForYear>>[] = [];
 
   for (let y = startYear; y < startYear + yearsToChronicle; y++) {
-    const yh = await generateHeadlinesForYear(y);
+    const yh = await generateHeadlinesForYear(y, worldId);
     headlines.push(yh);
   }
 
   // 5. Compress decades older than 10 years
-  await compressOldDecades(newState.current_year);
+  await compressOldDecades(updated.current_year, worldId);
 
   return {
-    previous_year: startYear,
-    current_year:  newState.current_year,
-    deaths:        dying.map(d => d.name),
+    previous_year:       startYear,
+    current_year:        updated.current_year,
+    deaths:              dying.map(d => d.name),
     headlines_generated: headlines.flat().length,
   };
 }
@@ -103,25 +125,26 @@ export async function advanceTime(years: number) {
 export async function rewindTime(years: number) {
   if (years < 1) throw new Error('Must rewind at least 1 year');
 
-  const state = await getWorldState();
-  const newYear = Math.max(1, state.current_year - years);
-  const actualRewind = state.current_year - newYear;
+  const world = await getActiveWorld();
+  const worldId = world.id;
+  const newYear = Math.max(1, world.current_year - years);
+  const actualRewind = world.current_year - newYear;
 
-  // De-age all characters (floor at 0)
   await prisma.$executeRaw`
     UPDATE persons
     SET age = GREATEST(age - ${actualRewind}, 0),
         updated_at = NOW()
+    WHERE world_id = ${worldId}::uuid
   `;
 
-  const newState = await prisma.worldState.update({
-    where: { id: state.id },
+  const updated = await prisma.world.update({
+    where: { id: worldId },
     data:  { current_year: newYear },
   });
 
   return {
-    previous_year: state.current_year,
-    current_year:  newState.current_year,
+    previous_year: world.current_year,
+    current_year:  updated.current_year,
     rewound_by:    actualRewind,
   };
 }
@@ -134,8 +157,11 @@ export async function getHeadlines(opts: {
   yearFrom?: number;
   yearTo?:   number;
 }) {
+  const worldId = await getActiveWorldId();
+
   return prisma.yearlyHeadline.findMany({
     where: {
+      world_id: worldId,
       ...(opts.type     ? { type:     opts.type as any }     : {}),
       ...(opts.category ? { category: opts.category as any } : {}),
       ...(opts.yearFrom || opts.yearTo

@@ -31,7 +31,7 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'apply_delta',
-    description: 'Apply stat changes to a character with a narrative description. Use this to change health, happiness, wealth, morality, reputation, influence, intelligence, age, relationship_status, religion, physical_appearance, sexuality, or lifespan.',
+    description: 'Apply stat changes to a character with a narrative description. Use this to change health, happiness, wealth, morality, reputation, influence, intelligence, age, occupation, relationship_status, religion, physical_appearance, sexuality, or death_age.',
     input_schema: {
       type: 'object',
       properties: {
@@ -48,6 +48,8 @@ const tools: Anthropic.Tool[] = [
             influence:           { type: 'number' },
             intelligence:        { type: 'number' },
             age:                 { type: 'number' },
+            occupation:          { type: 'string' },
+            death_age:           { type: 'number' },
             relationship_status: { type: 'string' },
             religion:            { type: 'string' },
             physical_appearance: { type: 'string' },
@@ -87,8 +89,9 @@ const tools: Anthropic.Tool[] = [
         sexuality:           { type: 'string', enum: ['HETEROSEXUAL', 'HOMOSEXUAL', 'BISEXUAL', 'ASEXUAL', 'PANSEXUAL', 'OTHER'] },
         gender:              { type: 'string' },
         race:                { type: 'string' },
+        occupation:          { type: 'string' },
         age:                 { type: 'number' },
-        lifespan:            { type: 'number' },
+        death_age:           { type: 'number' },
         relationship_status: { type: 'string' },
         religion:            { type: 'string' },
         health:              { type: 'number' },
@@ -100,7 +103,7 @@ const tools: Anthropic.Tool[] = [
         physical_appearance: { type: 'string' },
         wealth:              { type: 'number' },
       },
-      required: ['name', 'sexuality', 'gender', 'race', 'age', 'lifespan', 'relationship_status', 'religion', 'physical_appearance'],
+      required: ['name', 'sexuality', 'gender', 'race', 'age', 'death_age', 'relationship_status', 'religion', 'physical_appearance'],
     },
   },
   {

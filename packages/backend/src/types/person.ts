@@ -15,6 +15,11 @@ export {
   type CriminalRecordEntry,
   type CharacterListItem,
   type PaginatedResponse,
+  type FilterClause,
+  type FilterQuery,
+  type BulkDeltaField,
+  type BulkActionRequest,
+  type BulkActionResult,
 } from '@civ-sim/shared';
 
 import { z } from 'zod';
@@ -41,8 +46,9 @@ export const CreatePersonSchema = z.object({
   sexuality:           z.nativeEnum(Sexuality),
   gender:              z.string().min(1).max(50),
   race:                z.string().min(1).max(50),
+  occupation:          z.string().min(1).max(100).default('commoner'),
   age:                 z.number().int().min(0).max(999),
-  lifespan:            z.number().int().min(1).max(999).default(80),
+  death_age:           z.number().int().min(1).max(999).default(80),
   relationship_status: z.string().min(1).max(100),
   religion:            z.string().min(1).max(100),
   criminal_record:     z.array(CriminalRecordSchema).default([]),
@@ -65,8 +71,9 @@ export const PersonDeltaSchema = z.object({
   sexuality:           z.nativeEnum(Sexuality).optional(),
   gender:              z.string().min(1).max(50).optional(),
   race:                z.string().min(1).max(50).optional(),
+  occupation:          z.string().min(1).max(100).optional(),
   age:                 z.number().int().min(0).max(999).optional(),
-  lifespan:            z.number().int().min(1).max(999).optional(),
+  death_age:           z.number().int().min(1).max(999).optional(),
   relationship_status: z.string().min(1).max(100).optional(),
   religion:            z.string().min(1).max(100).optional(),
   health:              statSchema.optional(),
@@ -103,4 +110,71 @@ export const CriminalRecordRequestSchema = z.object({
 export const BulkCreateSchema = z.object({
   count:     z.number().int().min(1).max(1000),
   archetype: z.string().optional(), // if omitted, random per character
+});
+
+// --------------- Bulk Filter Action ---------------
+
+const SCALAR_NUMERIC_FIELDS = [
+  'age', 'health', 'morality', 'happiness',
+  'reputation', 'influence', 'intelligence', 'wealth',
+] as const;
+
+const SCALAR_STRING_FIELDS = ['race', 'occupation', 'religion', 'gender'] as const;
+
+const numericOp  = z.enum(['lt', 'lte', 'gt', 'gte']);
+const dotPathRe  = /^(trait|global_score)\..+$/;
+
+const FilterClauseSchema = z.discriminatedUnion('op', [
+  // numeric scalar — single threshold
+  z.object({
+    field: z.enum(SCALAR_NUMERIC_FIELDS),
+    op:    numericOp,
+    value: z.number(),
+  }),
+  // numeric scalar — range
+  z.object({
+    field: z.enum(SCALAR_NUMERIC_FIELDS),
+    op:    z.literal('between'),
+    min:   z.number(),
+    max:   z.number(),
+  }),
+  // string scalar — exact match
+  z.object({
+    field: z.enum(SCALAR_STRING_FIELDS),
+    op:    z.literal('eq'),
+    value: z.string().min(1),
+  }),
+  // string scalar — set membership
+  z.object({
+    field:  z.enum(SCALAR_STRING_FIELDS),
+    op:     z.literal('in'),
+    values: z.array(z.string().min(1)).min(1),
+  }),
+  // JSONB dot-path (trait.* or global_score.*) — single threshold
+  z.object({
+    field: z.string().regex(dotPathRe, 'Must be trait.<key> or global_score.<key>'),
+    op:    numericOp,
+    value: z.number(),
+  }),
+  // JSONB dot-path — range
+  z.object({
+    field: z.string().regex(dotPathRe, 'Must be trait.<key> or global_score.<key>'),
+    op:    z.literal('between'),
+    min:   z.number(),
+    max:   z.number(),
+  }),
+]);
+
+const BulkDeltaFieldSchema = z.object({
+  mode:  z.enum(['set', 'nudge']),
+  value: z.number(),
+});
+
+export const BulkActionSchema = z.object({
+  filters: z.array(FilterClauseSchema).min(1, 'At least one filter is required'),
+  delta:   z
+    .record(z.string(), BulkDeltaFieldSchema)
+    .refine((d) => Object.keys(d).length > 0, { message: 'Delta must contain at least one field' }),
+  event_summary:    z.string().min(1).max(500),
+  emotional_impact: z.enum(['traumatic', 'negative', 'neutral', 'positive', 'euphoric']),
 });

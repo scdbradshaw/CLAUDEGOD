@@ -146,9 +146,30 @@ model World {
   world_memories WorldMemory[]
   tick_jobs      TickJob[]
   yearly_reports YearlyReport[]
+  city           City?
 
   @@index([is_active])
   @@map("worlds")
+}
+
+// --------------- City ---------------
+// Phase 7: single-city container for every world. Future-proofs geography
+// without committing to multi-city yet — one row per world, enforced via
+// @@unique(world_id). Adding multi-city later means dropping the unique
+// and backfilling a city_id column on Person/DeceasedPerson.
+model City {
+  id          String  @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  founded_year Int    @default(1)
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @unique @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@map("cities")
 }
 
 // --------------- Person ---------------

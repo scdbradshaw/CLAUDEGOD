@@ -21,7 +21,46 @@ import type {
   PopulationTier,
   PeopleListItem,
   PeopleSearchParams,
+  CityWithStats,
 } from '@civ-sim/shared';
+
+// ── Rip (Phase 7) ─────────────────────────────────────────────
+// Query shape for GET /api/rip. Matches the backend whitelist.
+export interface RipListParams {
+  limit?:    number;
+  year_min?: number;
+  year_max?: number;
+  cause?:    'interaction' | 'old_age' | 'health';
+  sort?:     'died_at' | 'world_year' | 'age_at_death' | 'final_wealth' | 'name';
+  order?:    'asc' | 'desc';
+}
+
+export interface RipListResponse {
+  deceased: DeceasedPerson[];
+  meta: {
+    total:     number;
+    limit:     number;
+    city_name: string;
+  };
+}
+
+// Phase 7 Wave 2 — one row of a person's social graph (outgoing edge).
+export type RelationshipKind =
+  | 'parent' | 'child' | 'sibling' | 'spouse' | 'lover'
+  | 'close_friend' | 'rival' | 'enemy';
+
+export interface RelationshipRow {
+  id:            string;
+  owner_id:      string;
+  target_id:     string;
+  relation_type: RelationshipKind;
+  bond_strength: number;
+  target_name:   string;
+  target_alive:  boolean;
+  updated_at:    string;
+}
+
+export type { City, CityWithStats } from '@civ-sim/shared';
 
 const BASE = '/api';
 
@@ -99,6 +138,10 @@ export const api = {
       request<PaginatedResponse<MemoryEntry>>(
         `/characters/${id}/memory?page=${page}&limit=${limit}`,
       ),
+
+    // Phase 7 Wave 2 — outgoing relationship edges, strongest-from-neutral first.
+    relationships: (id: string, limit = 24) =>
+      request<RelationshipRow[]>(`/characters/${id}/relationships?limit=${limit}`),
   },
 
   rulesets: {
@@ -204,8 +247,21 @@ export const api = {
   },
 
   rip: {
-    list: (limit = 100) =>
-      request<DeceasedPerson[]>(`/rip?limit=${limit}`),
+    list: (params: RipListParams = {}) => {
+      const qs = new URLSearchParams();
+      if (params.limit    !== undefined) qs.set('limit',    String(params.limit));
+      if (params.year_min !== undefined) qs.set('year_min', String(params.year_min));
+      if (params.year_max !== undefined) qs.set('year_max', String(params.year_max));
+      if (params.cause)                  qs.set('cause',    params.cause);
+      if (params.sort)                   qs.set('sort',     params.sort);
+      if (params.order)                  qs.set('order',    params.order);
+      return request<RipListResponse>(`/rip?${qs.toString()}`);
+    },
+  },
+
+  cities: {
+    // Phase 7 Wave 1 — the active world's single city plus live pop + dead totals.
+    getActive: () => request<CityWithStats>('/cities/active'),
   },
 
   world: {

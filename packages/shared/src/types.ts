@@ -295,6 +295,18 @@ export interface TickResult {
   new_market_index:        number;
   /** Best score per interaction type id */
   top_scores:              Record<string, TickTopScore>;
+  /** Phase 7 Wave 3 — agentic actions that fired on year-boundary ticks. */
+  agentic_actions?:        AgenticActionLog[];
+}
+
+/** One deliberate action taken by a high-agency agent during the yearly pass. */
+export interface AgenticActionLog {
+  kind:          'befriend' | 'betray' | 'marry' | 'murder';
+  agent_id:      string;
+  agent_name:    string;
+  target_id:     string;
+  target_name:   string;
+  killed_target: boolean;
 }
 
 // --------------- Economy ---------------
@@ -309,6 +321,25 @@ export interface EconomyState {
   global_trait_multipliers: Record<string, number>;
   /** Current world global trait child values e.g. { "war.morale": 20 } */
   global_traits:            Record<string, number>;
+}
+
+// --------------- City (Phase 7) ---------------
+// Every world has exactly one city. Future multi-city support will replace
+// the @@unique(world_id) with a `city_id` column on Person / DeceasedPerson.
+
+export interface City {
+  id:           string;
+  name:         string;
+  description:  string | null;
+  founded_year: number;
+  world_id:     string;
+  created_at:   string;
+  updated_at:   string;
+}
+
+export interface CityWithStats extends City {
+  population:  number;
+  dead_total:  number;
 }
 
 // --------------- Deceased person ---------------

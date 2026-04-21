@@ -15,6 +15,7 @@ import {
 } from '../types/person';
 import { generateCharacter, ARCHETYPE_LABELS } from '../services/character-gen.service';
 import { getActiveWorld } from '../services/time.service';
+import { listForPerson as listRelationshipsForPerson } from '../services/relationships.service';
 import { Prisma } from '@prisma/client';
 
 const router = Router();
@@ -177,6 +178,15 @@ router.get('/:id', async (req: Request, res: Response) => {
       timestamp: m.timestamp.toISOString(),
     })),
   });
+});
+
+// ── GET /api/characters/:id/relationships (Phase 7 Wave 2) ───
+// Returns the owner's outgoing relationship graph — strongest-from-neutral
+// edges first. Used by CharacterDetail's new Relationships panel.
+router.get('/:id/relationships', async (req: Request, res: Response) => {
+  const limit = Math.min(100, parseInt(String(req.query.limit ?? 24)) || 24);
+  const rows = await listRelationshipsForPerson(req.params.id, limit);
+  res.json(rows);
 });
 
 // ── Seed counts per population tier ──────────────────────────

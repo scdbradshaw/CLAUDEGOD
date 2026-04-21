@@ -7,6 +7,7 @@ import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import { writeMemory } from './memory.service';
 import { DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
+import { getOrCreateDefaultCity } from './cities.service';
 
 // ── Active-world helper ────────────────────────────────────────────────────
 
@@ -39,6 +40,10 @@ export async function getActiveWorld() {
       },
     });
   }
+  // Idempotent: guarantees a City exists for any world surfaced by the API.
+  // Cheap — a PK lookup on the already-indexed world_id. Keeps legacy worlds
+  // created before Phase 7 auto-hydrated the first time they're touched.
+  await getOrCreateDefaultCity(world.id);
   return world;
 }
 

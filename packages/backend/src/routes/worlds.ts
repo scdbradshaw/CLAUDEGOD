@@ -8,6 +8,7 @@ import {
   DEFAULT_GLOBAL_TRAITS,
   DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
 } from '@civ-sim/shared';
+import { getOrCreateDefaultCity } from '../services/cities.service';
 
 const router = Router();
 
@@ -78,6 +79,10 @@ router.post('/', async (req: Request, res: Response) => {
       active_trait_categories:  [],
     },
   });
+
+  // Every world gets its default city up-front so the Dashboard + Rip page
+  // never see a "city missing" state. Multi-city support later will add more.
+  await getOrCreateDefaultCity(world.id);
 
   res.status(201).json(world);
 });

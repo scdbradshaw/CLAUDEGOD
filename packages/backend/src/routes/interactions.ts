@@ -41,6 +41,28 @@ import {
   type FactionSplitResult,
 } from '../services/group-lifecycle.service';
 import { writeMemoriesBatch } from '../services/memory.service';
+import {
+  applyRelationshipDeltas,
+  decayAndPruneForWorld,
+  classifyImpactForRelationship,
+  type RelationshipDelta,
+} from '../services/relationships.service';
+import {
+  runAgenticTurn,
+  type AgentPersonSnapshot,
+  type OwnedEdge,
+  type AgenticActionLog,
+} from '../services/agentic.service';
+import {
+  applyOccupationIncome,
+  distributeInheritance,
+  type InheritanceResult,
+} from '../services/economy-occupation.service';
+import {
+  runReligionConversionPass,
+  type ConversionEvent,
+} from '../services/religion-dynamics.service';
+import type { CriminalRecord } from '@civ-sim/shared';
 
 const router = Router();
 
@@ -212,6 +234,8 @@ type LivingPerson = {
   reputation: number;
   influence: number;
   intelligence: number;
+  relationship_status: string;
+  criminal_record:     Prisma.JsonValue;
 };
 
 /**
@@ -224,7 +248,7 @@ function pickAntagonizer(
   subject:   LivingPerson,
   allLiving: LivingPerson[],
   byId:      Map<string, LivingPerson>,
-  linksOf:   Map<string, { target_id: string; bond_strength: number }[]>,
+  linksOf:   Map<string, OwnedEdge[]>,
 ): LivingPerson | null {
   const pool = allLiving.filter(p => p.id !== subject.id);
   if (pool.length === 0) return null;
@@ -328,6 +352,9 @@ router.post('/tick', async (_req: Request, res: Response) => {
         traits: true, global_scores: true,
         health: true, morality: true, happiness: true,
         reputation: true, influence: true, intelligence: true,
+        // Phase 7 Wave 3 — agentic actions need these; cost is negligible
+        // vs the price of a second fetch per year boundary.
+        relationship_status: true, criminal_record: true,
       },
     }) as LivingPerson[];
 
@@ -339,16 +366,22 @@ router.post('/tick', async (_req: Request, res: Response) => {
 
     const byId = new Map(living.map(p => [p.id, p]));
 
-    // 2a. Inner-circle link lookup — grouped by owner_id for O(1) access
+    // 2a. Inner-circle link lookup — grouped by owner_id for O(1) access.
+    // relation_type is pulled too so Wave 3's agentic turn can read the
+    // owner's full outgoing graph without a second fetch.
     const livingIds = living.map(p => p.id);
     const allLinks = await prisma.innerCircleLink.findMany({
       where: { owner_id: { in: livingIds } },
-      select: { owner_id: true, target_id: true, bond_strength: true },
+      select: { owner_id: true, target_id: true, bond_strength: true, relation_type: true },
     });
-    const linksOf = new Map<string, { target_id: string; bond_strength: number }[]>();
+    const linksOf = new Map<string, OwnedEdge[]>();
     for (const l of allLinks) {
       const arr = linksOf.get(l.owner_id) ?? [];
-      arr.push({ target_id: l.target_id, bond_strength: l.bond_strength });
+      arr.push({
+        target_id:     l.target_id,
+        bond_strength: l.bond_strength,
+        relation_type: l.relation_type as OwnedEdge['relation_type'],
+      });
       linksOf.set(l.owner_id, arr);
     }
 
@@ -575,6 +608,24 @@ router.post('/tick', async (_req: Request, res: Response) => {
           ageAtEvent:      m.age_at_event,
           eventKind:       'interaction',
         })));
+
+        // 5a.i. Phase 7 Wave 2 — feed the relationship graph.
+        // Each memory with a counterparty and a non-neutral impact produces
+        // a directed edge bump; applyRelationshipDeltas aggregates duplicates
+        // and upserts InnerCircleLink rows in a single round-trip.
+        const relDeltas: RelationshipDelta[] = [];
+        for (const m of pendingMemories) {
+          if (!m.counterparty_id) continue;
+          const classified = classifyImpactForRelationship(m.emotional_impact);
+          if (!classified) continue;
+          relDeltas.push({
+            ownerId:       m.person_id,
+            targetId:      m.counterparty_id,
+            kind:          classified.kind,
+            strengthDelta: classified.delta,
+          });
+        }
+        await applyRelationshipDeltas(tx, relDeltas);
       }
 
       // 5b. Viral membership joins — split by kind, skipDuplicates catches
@@ -622,12 +673,17 @@ router.post('/tick', async (_req: Request, res: Response) => {
     let deathsThisTick = 0;
     const oldTotalDeaths = world.total_deaths;
     const religionDissolves: ReligionDissolveResult[] = [];
+    const inheritances: InheritanceResult[] = [];
 
     for (const p of living) {
       if (finalHealth[p.id] <= 0) {
         await prisma.$transaction(async (tx) => {
           const dissolved = await handlePersonDeath(tx, p.id, p.name, world.current_year, world.id);
           religionDissolves.push(...dissolved);
+          // Phase 7 Wave 4 — distribute wealth to top kin/spouse/lover
+          // before deletion cascades away the edges.
+          const inh = await distributeInheritance(tx, p.id, p.name, p.wealth, world.current_year);
+          if (inh.heirs.length > 0) inheritances.push(inh);
           await tx.deceasedPerson.create({
             data: {
               name:           p.name,
@@ -652,6 +708,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
     let religionDrops = 0;
     let factionDrops  = 0;
     let factionSplits: FactionSplitResult[] = [];
+    let agenticActions: AgenticActionLog[] = [];
+    let conversions: ConversionEvent[] = [];
 
     if (newTickCount % 2 === 0) {
       await prisma.$executeRaw`
@@ -669,6 +727,9 @@ router.post('/tick', async (_req: Request, res: Response) => {
         await prisma.$transaction(async (tx) => {
           const dissolved = await handlePersonDeath(tx, dead.id, dead.name, newYear, world.id);
           religionDissolves.push(...dissolved);
+          // Phase 7 Wave 4 — same inheritance path as interaction deaths.
+          const inh = await distributeInheritance(tx, dead.id, dead.name, dead.wealth, newYear);
+          if (inh.heirs.length > 0) inheritances.push(inh);
           await tx.deceasedPerson.create({
             data: {
               name:            dead.name,
@@ -711,6 +772,63 @@ router.post('/tick', async (_req: Request, res: Response) => {
       factionSplits = await prisma.$transaction(async (tx) =>
         runFactionSplitCheck(tx, personSnaps, newYear, world.id),
       );
+
+      // 7d. Phase 7 Wave 2 — relationship decay.
+      // Pulls all bond strengths one step toward neutral (50) and prunes
+      // rows that have fully decayed. Runs outside the txn by design; it's
+      // two cheap bulk statements that don't need the per-world isolation
+      // of the membership pass above.
+      await decayAndPruneForWorld(world.id);
+
+      // 7e. Phase 7 Wave 3 — agentic annual turn.
+      // Top-K by influence + |morality-50|*2 + max|bond-50|*2 each take a
+      // single deliberate action: befriend / betray / marry / murder.
+      // Uses the pre-tick linksOf (relationships haven't been re-fetched
+      // since step 2a). Filters out anyone already killed this tick —
+      // both interaction deaths and natural old-age deaths.
+      const alreadyDead = new Set<string>();
+      for (const p of living) {
+        if (finalHealth[p.id] !== undefined && finalHealth[p.id] <= 0) alreadyDead.add(p.id);
+      }
+      for (const d of naturallyDying) alreadyDead.add(d.id);
+
+      const agentSnapshots: AgentPersonSnapshot[] = living
+        .filter(p => !alreadyDead.has(p.id))
+        .map(p => ({
+          id:        p.id,
+          name:      p.name,
+          age:       p.age + 1, // post-aging, since we just advanced years
+          morality:  p.morality,
+          influence: p.influence,
+          happiness: p.happiness,
+          wealth:    p.wealth,
+          relationship_status: p.relationship_status,
+          criminal_record:     (p.criminal_record as unknown as CriminalRecord[]) ?? [],
+        }));
+
+      const agenticResult = await prisma.$transaction(async (tx) =>
+        runAgenticTurn(tx, agentSnapshots, linksOf, newYear, world.id),
+      );
+      agenticActions = agenticResult.actions;
+      religionDissolves.push(...agenticResult.religion_dissolves);
+      inheritances.push(...agenticResult.inheritances);
+      deathsThisTick += agenticResult.actions.filter(a => a.killed_target).length;
+
+      // 7f. Phase 7 Wave 4 — annual occupation income.
+      // Scales by current market index (pre-tick-9 value — tick 9 will
+      // repopulate it from the new fundamentals). Floor/ceiling live
+      // inside the service so we don't leak domain knowledge here.
+      await applyOccupationIncome(world.id, world.market_index);
+
+      // 7g. Phase 7 Wave 5 — annual religion conversion pass.
+      // Non-members in doubt (low happiness or low faith.devotion) scan
+      // all active religions and convert to the one they best align with.
+      // Complements the viral join path — this is internal doubt finding
+      // faith, not faith spreading through contact.
+      const conversionResult = await prisma.$transaction(async (tx) =>
+        runReligionConversionPass(tx, [...personSnaps.values()], groups.religions, memberships, newYear),
+      );
+      conversions = conversionResult.conversions;
     }
 
     // 8. Births — every 10 cumulative deaths triggers 12 new births
@@ -781,6 +899,25 @@ router.post('/tick', async (_req: Request, res: Response) => {
         name:           s.new_faction_name,
         split_from_id:  s.split_from_id,
         new_leader_id:  s.new_leader_id,
+      })),
+      // Phase 7 Wave 3 — one row per agentic action that fired this year
+      agentic_actions: agenticActions,
+      // Phase 7 Wave 4 — inheritance distributions from this tick's deaths
+      inheritances: inheritances.map(i => ({
+        deceased_name: i.deceased_name,
+        estate:        i.estate,
+        heirs: i.heirs.map(h => ({
+          name:     h.heir_name,
+          relation: h.relation,
+          share:    h.share,
+        })),
+      })),
+      // Phase 7 Wave 5 — doubt-driven religion conversions on year boundary
+      conversions: conversions.map(c => ({
+        person_id:     c.person_id,
+        religion_id:   c.religion_id,
+        religion_name: c.religion_name,
+        alignment:     c.alignment,
       })),
     });
 

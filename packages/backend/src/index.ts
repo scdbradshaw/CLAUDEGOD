@@ -16,6 +16,7 @@ import worldRouter         from './routes/world';
 import religionsRouter     from './routes/religions';
 import factionsRouter      from './routes/factions';
 import worldsRouter        from './routes/worlds';
+import citiesRouter        from './routes/cities';
 import { prisma }          from './db/client';
 import { startJobWorker, registerJobHandler } from './services/jobs.service';
 import { generateHeadlinesForYear, ensureDecadeSummaries } from './services/headlines.service';
@@ -41,6 +42,7 @@ app.use('/api/world',         worldRouter);
 app.use('/api/religions',     religionsRouter);
 app.use('/api/factions',      factionsRouter);
 app.use('/api/worlds',        worldsRouter);
+app.use('/api/cities',        citiesRouter);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 

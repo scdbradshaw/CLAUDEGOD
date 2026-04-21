@@ -4,12 +4,24 @@
 
 import { useParams, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { api } from '../api/client';
+import { api, type RelationshipKind } from '../api/client';
 import StatBar, { statTextColor } from '../components/StatBar';
 import MemoryBankPanel from '../components/MemoryBankPanel';
 import GodModePanel    from '../components/GodModePanel';
 import type { CriminalRecord } from '@civ-sim/shared';
 import { GLOBAL_TRAITS } from '@civ-sim/shared';
+
+// Phase 7 Wave 2 — relation kind → display label + tag color.
+const RELATION_META: Record<RelationshipKind, { label: string; tag: string }> = {
+  parent:       { label: 'Parent',       tag: 'bg-sky-900/50 text-sky-300'       },
+  child:        { label: 'Child',        tag: 'bg-sky-900/50 text-sky-300'       },
+  sibling:      { label: 'Sibling',      tag: 'bg-sky-900/50 text-sky-300'       },
+  spouse:       { label: 'Spouse',       tag: 'bg-pink-900/50 text-pink-300'     },
+  lover:        { label: 'Lover',        tag: 'bg-pink-900/50 text-pink-300'     },
+  close_friend: { label: 'Close Friend', tag: 'bg-emerald-900/50 text-emerald-300' },
+  rival:        { label: 'Rival',        tag: 'bg-amber-900/50 text-amber-300'   },
+  enemy:        { label: 'Enemy',        tag: 'bg-red-900/50 text-red-300'       },
+};
 
 const STATS: { label: string; key: string }[] = [
   { label: 'Health',       key: 'health'       },
@@ -44,6 +56,13 @@ export default function CharacterDetail() {
     queryFn:   () => api.characters.get(id!),
     enabled:   !!id,
     refetchOnWindowFocus: true,
+  });
+
+  // Outgoing relationship edges, strongest-from-neutral first. Phase 7 Wave 2.
+  const { data: relationships } = useQuery({
+    queryKey: ['character', id, 'relationships'],
+    queryFn:  () => api.characters.relationships(id!, 24),
+    enabled:  !!id,
   });
 
   if (isLoading) return <div className="p-8 text-muted animate-pulse">Loading…</div>;
@@ -219,6 +238,48 @@ export default function CharacterDetail() {
         <div className="space-y-4">
           {/* God Mode / Simulation panel */}
           <GodModePanel personId={person.id} />
+
+          {/* Relationships — Phase 7 Wave 2 */}
+          <div className="panel p-4">
+            <h2 className="font-display text-[10px] text-gold uppercase tracking-widest mb-3">
+              Relationships
+              <span className="ml-2 text-gray-600 font-mono font-normal">({relationships?.length ?? 0})</span>
+            </h2>
+            {!relationships || relationships.length === 0 ? (
+              <p className="text-xs text-muted italic">No significant bonds yet.</p>
+            ) : (
+              <ul className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                {relationships.map((r) => {
+                  const meta = RELATION_META[r.relation_type];
+                  // Bar fills from 50-midpoint toward whichever end the bond leans.
+                  const isWarm = r.bond_strength >= 50;
+                  const pct = Math.round(Math.abs(r.bond_strength - 50) * 2);
+                  const barColor = isWarm ? 'bg-emerald-500/70' : 'bg-red-500/70';
+                  return (
+                    <li key={r.id} className="text-xs border-b border-border pb-2 last:border-0 last:pb-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <Link
+                          to={`/character/${r.target_id}`}
+                          className={`font-medium truncate ${r.target_alive ? 'text-gray-200 hover:text-gold' : 'text-gray-500 line-through'}`}
+                        >
+                          {r.target_name}
+                        </Link>
+                        <span className={`tag shrink-0 ${meta.tag}`}>{meta.label}</span>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="flex-1 h-1.5 bg-gray-800 rounded overflow-hidden">
+                          <div className={`h-full ${barColor}`} style={{ width: `${pct}%` }} />
+                        </div>
+                        <span className="text-[10px] text-muted tabular-nums w-8 text-right">
+                          {r.bond_strength}
+                        </span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
 
           {/* Memory Bank */}
           <div className="panel p-4">

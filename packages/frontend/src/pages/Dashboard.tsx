@@ -76,6 +76,31 @@ function TickControls() {
               → {lastResult.new_market_index.toFixed(2)}
             </span>
           </div>
+          {lastResult.agentic_actions && lastResult.agentic_actions.length > 0 && (
+            <div className="pt-2 mt-2 border-t border-border/50 space-y-0.5">
+              <div className="flex justify-between">
+                <span>Agentic Actions</span>
+                <span className="text-amber-400">{lastResult.agentic_actions.length}</span>
+              </div>
+              {lastResult.agentic_actions.slice(0, 5).map((a, i) => (
+                <div key={i} className="text-[9px] text-zinc-500 truncate">
+                  <span className={
+                    a.kind === 'murder'   ? 'text-red-400'     :
+                    a.kind === 'betray'   ? 'text-orange-400'  :
+                    a.kind === 'marry'    ? 'text-pink-400'    :
+                    /* befriend */          'text-emerald-400'
+                  }>{a.kind}</span>
+                  <span className="text-zinc-400"> · </span>
+                  <Link to={`/character/${a.agent_id}`} className="hover:text-gold">{a.agent_name}</Link>
+                  <span className="text-zinc-600"> → </span>
+                  <Link to={`/character/${a.target_id}`} className="hover:text-gold">{a.target_name}</Link>
+                </div>
+              ))}
+              {lastResult.agentic_actions.length > 5 && (
+                <div className="text-[9px] text-zinc-600">+ {lastResult.agentic_actions.length - 5} more</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 
@@ -165,6 +190,14 @@ export default function Dashboard() {
   });
   const activeWorld = worlds?.find((w: WorldListItem) => w.is_active) ?? null;
 
+  // Phase 7 — the world's sole city. Lazily created on first call, so this
+  // query is safe even for worlds made before Phase 7 shipped.
+  const { data: city } = useQuery({
+    queryKey: ['cities', 'active'],
+    queryFn:  api.cities.getActive,
+    staleTime: 60_000,
+  });
+
   // Auto-seed 100 souls if the world is empty
   useEffect(() => {
     if (data && data.total === 0) {
@@ -204,7 +237,9 @@ export default function Dashboard() {
             </p>
             {activeWorld && (
               <p className="text-[10px] text-zinc-600 mt-0.5">
+                {city ? <><span className="text-amber-500/80">{city.name}</span> · </> : null}
                 Year {activeWorld.current_year} · {activeWorld.population_tier}
+                {city?.dead_total ? <> · <span className="text-zinc-500">{city.dead_total} dead</span></> : null}
               </p>
             )}
           </div>

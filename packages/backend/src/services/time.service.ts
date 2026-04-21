@@ -5,7 +5,7 @@
 
 import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
-import { generateHeadlinesForYear, compressOldDecades } from './headlines.service';
+import { generateHeadlinesForYear, ensureDecadeSummaries } from './headlines.service';
 import { DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
 
 // ── Active-world helper ────────────────────────────────────────────────────
@@ -109,8 +109,10 @@ export async function advanceTime(years: number) {
     headlines.push(yh);
   }
 
-  // 5. Compress decades older than 10 years
-  await compressOldDecades(updated.current_year, worldId);
+  // 5. Generate decade summaries for every fully-elapsed decade.
+  //    Annuals are preserved — the Chronicle keeps both layers forever and
+  //    the frontend toggles between ANNUAL and DECADE views.
+  await ensureDecadeSummaries(updated.current_year - 1, worldId);
 
   return {
     previous_year:       startYear,

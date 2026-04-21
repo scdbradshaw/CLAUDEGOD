@@ -247,6 +247,8 @@ export interface WorldSnapshot {
 
 // ── Time types ───────────────────────────────────────────────
 
+export type Tone = 'tabloid' | 'literary' | 'epic' | 'reportage' | 'neutral';
+
 export interface Headline {
   id:          string;
   year:        number;
@@ -256,6 +258,7 @@ export interface Headline {
   story:       string;
   person_name: string | null;
   person_id:   string | null;
+  tone:        Tone;
   created_at:  string;
 }
 

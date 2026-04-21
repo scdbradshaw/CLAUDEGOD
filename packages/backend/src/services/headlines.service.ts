@@ -243,24 +243,50 @@ export async function generateHeadlinesForYear(year: number, worldId: string): P
   return results;
 }
 
-export async function compressOldDecades(currentYear: number, worldId: string): Promise<void> {
-  const cutoff = currentYear - 10;
+/**
+ * Decade-boundary generation (Step 21).
+ *
+ * At the end of every `advanceTime`, walk every fully-elapsed decade and
+ * generate its DECADE summary row if one doesn't already exist for each
+ * category. Annual rows are preserved — no deletion, no compression.
+ *
+ * Carry-forward: a world that crossed multiple decade boundaries in a single
+ * advance (or one whose earlier advances predated this feature) still gets
+ * summaries for every historic decade the next time the clock ticks.
+ *
+ * Cost control: we pre-fetch the existing (decade, category) pairs and skip
+ * decades that already have all 10 category rows, so the only repeated cost
+ * for a long-running world is a single `findMany` on the DECADE rows.
+ */
+export async function ensureDecadeSummaries(
+  lastFullYear: number,
+  worldId: string,
+): Promise<void> {
+  if (lastFullYear < 9) return; // no decade has fully elapsed yet
 
-  const oldAnnuals = await prisma.yearlyHeadline.findMany({
-    where: { world_id: worldId, year: { lt: cutoff }, type: HeadlineType.ANNUAL },
-    orderBy: { year: 'asc' },
+  const existing = await prisma.yearlyHeadline.findMany({
+    where: { world_id: worldId, type: HeadlineType.DECADE },
+    select: { year: true, category: true },
   });
 
-  if (oldAnnuals.length === 0) return;
-
-  const byDecade = new Map<number, typeof oldAnnuals>();
-  for (const h of oldAnnuals) {
-    const ds = Math.floor(h.year / 10) * 10;
-    if (!byDecade.has(ds)) byDecade.set(ds, []);
-    byDecade.get(ds)!.push(h);
+  const summarized = new Set(existing.map(d => `${d.year}:${d.category}`));
+  const byYearCount = new Map<number, number>();
+  for (const d of existing) {
+    byYearCount.set(d.year, (byYearCount.get(d.year) ?? 0) + 1);
   }
 
-  for (const [decadeStart, annuals] of byDecade) {
+  // Ten headline categories — if a decade already has all ten, skip entirely.
+  const CATEGORY_COUNT = 10;
+
+  for (let ds = 0; ds + 9 <= lastFullYear; ds += 10) {
+    if ((byYearCount.get(ds) ?? 0) >= CATEGORY_COUNT) continue;
+
+    const annuals = await prisma.yearlyHeadline.findMany({
+      where: { world_id: worldId, year: { gte: ds, lt: ds + 10 }, type: HeadlineType.ANNUAL },
+      orderBy: { year: 'asc' },
+    });
+    if (annuals.length === 0) continue;
+
     const byCategory = new Map<HeadlineCategory, typeof annuals>();
     for (const h of annuals) {
       if (!byCategory.has(h.category)) byCategory.set(h.category, []);
@@ -268,26 +294,19 @@ export async function compressOldDecades(currentYear: number, worldId: string): 
     }
 
     for (const [category, catAnnuals] of byCategory) {
-      const existing = await prisma.yearlyHeadline.findUnique({
-        where: { world_id_year_type_category: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category } },
-      });
-      if (existing) continue;
+      const key = `${ds}:${category}`;
+      if (summarized.has(key)) continue;
 
-      const summary = await buildDecadeSummary(decadeStart, category, catAnnuals);
+      const summary = await buildDecadeSummary(ds, category, catAnnuals);
 
       await prisma.yearlyHeadline.upsert({
-        where: { world_id_year_type_category: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category } },
-        create: { world_id: worldId, year: decadeStart, type: HeadlineType.DECADE, category, ...summary },
+        where: { world_id_year_type_category: { world_id: worldId, year: ds, type: HeadlineType.DECADE, category } },
+        create: { world_id: worldId, year: ds, type: HeadlineType.DECADE, category, ...summary },
         update: summary,
       });
-    }
 
-    await prisma.yearlyHeadline.deleteMany({
-      where: {
-        world_id: worldId,
-        year: { gte: decadeStart, lt: decadeStart + 10 },
-        type: HeadlineType.ANNUAL,
-      },
-    });
+      summarized.add(key);
+      byYearCount.set(ds, (byYearCount.get(ds) ?? 0) + 1);
+    }
   }
 }

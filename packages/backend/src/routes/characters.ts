@@ -152,7 +152,7 @@ router.post(
   '/:id/delta',
   validate(DeltaRequestSchema),
   async (req: Request, res: Response) => {
-    const { delta, event_summary, emotional_impact, force } = req.body;
+    const { delta, event_summary, emotional_impact, force, tone } = req.body;
 
     const result = await applyDelta({
       personId: req.params.id,
@@ -160,6 +160,7 @@ router.post(
       event_summary,
       emotional_impact,
       force: force === true,
+      tone,
     });
 
     res.json(result);
@@ -171,8 +172,8 @@ router.post(
   '/:id/criminal-record',
   validate(CriminalRecordRequestSchema),
   async (req: Request, res: Response) => {
-    const { record, event_summary } = req.body;
-    const result = await addCriminalRecord(req.params.id, record, event_summary);
+    const { record, event_summary, tone } = req.body;
+    const result = await addCriminalRecord(req.params.id, record, event_summary, tone);
     res.json(result);
   },
 );

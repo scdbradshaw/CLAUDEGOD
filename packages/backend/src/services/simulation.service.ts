@@ -6,6 +6,11 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import { getActiveWorldId } from './time.service';
+import {
+  toneForGodModeSingle,
+  toneForGodModeBulk,
+  type Tone,
+} from './tone.service';
 import type {
   PersonDelta,
   MutationResult,
@@ -64,6 +69,13 @@ export interface ApplyDeltaOptions {
   emotional_impact: EmotionalImpact;
   /** If true, skip simulation rules (God Mode) */
   force?:          boolean;
+  /**
+   * Narrative voice for the resulting memory. Caller-specified tones win;
+   * unspecified God Mode writes default to the tabloid single-target voice,
+   * non-God-Mode callers (interaction outcomes, simulation events) pass their
+   * own tone derived from the outcome band.
+   */
+  tone?:           Tone;
 }
 
 /**
@@ -71,7 +83,7 @@ export interface ApplyDeltaOptions {
  * Returns the updated person and the new memory entry.
  */
 export async function applyDelta(opts: ApplyDeltaOptions): Promise<MutationResult> {
-  const { personId, delta, event_summary, emotional_impact, force = false } = opts;
+  const { personId, delta, event_summary, emotional_impact, force = false, tone } = opts;
 
   const person = await prisma.person.findUniqueOrThrow({ where: { id: personId } });
 
@@ -82,6 +94,10 @@ export async function applyDelta(opts: ApplyDeltaOptions): Promise<MutationResul
 
   // Build the Prisma update payload (only defined keys)
   const updateData = buildUpdatePayload(sanitizedDelta);
+
+  // Resolve tone: caller-specified wins; otherwise God Mode gets the
+  // single-target voice, simulation writes get the neutral log voice.
+  const resolvedTone: Tone = tone ?? (force ? toneForGodModeSingle() : 'neutral');
 
   // Atomically update person + create memory entry
   const [updatedPerson, memoryEntry] = await prisma.$transaction([
@@ -95,6 +111,7 @@ export async function applyDelta(opts: ApplyDeltaOptions): Promise<MutationResul
         event_summary,
         emotional_impact,
         delta_applied:   sanitizedDelta as Prisma.InputJsonValue,
+        tone:            resolvedTone,
         timestamp:       new Date(),
       },
     }),
@@ -113,11 +130,15 @@ export async function addCriminalRecord(
   personId:      string,
   record:        CriminalRecord,
   event_summary: string,
+  tone?:         Tone,
 ): Promise<MutationResult> {
   const person = await prisma.person.findUniqueOrThrow({ where: { id: personId } });
   const existing = person.criminal_record as unknown as CriminalRecord[];
 
   const updated = [...existing, record];
+
+  // Crimes default to the tabloid single-target voice.
+  const resolvedTone: Tone = tone ?? toneForGodModeSingle();
 
   const [updatedPerson, memoryEntry] = await prisma.$transaction([
     prisma.person.update({
@@ -130,6 +151,7 @@ export async function addCriminalRecord(
         event_summary,
         emotional_impact: 'negative',
         delta_applied:   { criminal_record: [record] } as unknown as Prisma.InputJsonValue,
+        tone:            resolvedTone,
         timestamp:       new Date(),
       },
     }),
@@ -153,8 +175,11 @@ export async function addCriminalRecord(
 export async function applyBulkFilter(
   req: BulkActionRequest,
 ): Promise<BulkActionResult> {
-  const { filters, delta, event_summary, emotional_impact } = req;
+  const { filters, delta, event_summary, emotional_impact, tone } = req;
   const worldId = await getActiveWorldId();
+
+  // Bulk actions read as dispatches by default — the reportage voice.
+  const resolvedTone: Tone = tone ?? toneForGodModeBulk();
 
   // ── 1. Build the WHERE clause ─────────────────────────────────────────────
   // Always scope to the active world
@@ -292,6 +317,7 @@ export async function applyBulkFilter(
             event_summary,
             emotional_impact: emotional_impact as import('@prisma/client').EmotionalImpact,
             delta_applied:   appliedDelta as Prisma.InputJsonValue,
+            tone:            resolvedTone,
             timestamp:       new Date(),
           },
         }),

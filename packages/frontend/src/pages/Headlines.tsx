@@ -6,7 +6,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { api, type Headline } from '../api/client';
+import { api, type Headline, type Tone } from '../api/client';
 
 // ── Category metadata ──────────────────────────────────────────────────────
 
@@ -23,6 +23,32 @@ const CATEGORY_META: Record<string, { label: string; color: string; icon: string
   LONGEST_SURVIVING:   { label: 'Longest Surviving',  color: 'text-lime-400',   icon: '⌛' },
 };
 
+// ── Tone metadata ──────────────────────────────────────────────────────────
+// Colors pulled to give each voice a distinct chip — tabloid = hot pink
+// (scandal), literary = slate (restraint), epic = amber (mythic gold),
+// reportage = sky (newsprint blue), neutral = zinc (plain log).
+
+const TONE_META: Record<Tone, { label: string; className: string }> = {
+  tabloid:   { label: 'Tabloid',   className: 'bg-pink-500/10   text-pink-300   border-pink-500/30'   },
+  literary:  { label: 'Literary',  className: 'bg-slate-500/10  text-slate-300  border-slate-500/30'  },
+  epic:      { label: 'Epic',      className: 'bg-amber-500/10  text-amber-300  border-amber-500/30'  },
+  reportage: { label: 'Reportage', className: 'bg-sky-500/10    text-sky-300    border-sky-500/30'    },
+  neutral:   { label: 'Neutral',   className: 'bg-zinc-500/10   text-zinc-400   border-zinc-500/30'   },
+};
+
+function TonePill({ tone }: { tone?: Tone }) {
+  if (!tone) return null;
+  const meta = TONE_META[tone] ?? TONE_META.neutral;
+  return (
+    <span
+      className={`inline-flex items-center text-[9px] uppercase tracking-widest px-1.5 py-0.5 border rounded ${meta.className}`}
+      title={`Narrative voice: ${meta.label.toLowerCase()}`}
+    >
+      {meta.label}
+    </span>
+  );
+}
+
 // ── HeadlineCard ───────────────────────────────────────────────────────────
 
 function HeadlineCard({ h }: { h: Headline }) {
@@ -38,7 +64,10 @@ function HeadlineCard({ h }: { h: Headline }) {
         <div className="flex items-center gap-2 min-w-0">
           <span className={`text-lg shrink-0 ${meta.color}`}>{meta.icon}</span>
           <div className="min-w-0">
-            <p className={`text-[10px] uppercase tracking-widest ${meta.color} mb-0.5`}>{meta.label}</p>
+            <div className="flex items-center gap-2 mb-0.5">
+              <p className={`text-[10px] uppercase tracking-widest ${meta.color}`}>{meta.label}</p>
+              <TonePill tone={h.tone} />
+            </div>
             <p className="text-sm font-semibold text-white leading-snug">{h.headline}</p>
             {h.person_name && (
               <p className="text-xs text-zinc-500 mt-0.5">

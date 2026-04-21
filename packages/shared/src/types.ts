@@ -567,6 +567,8 @@ export interface DeltaRequest {
   emotional_impact: EmotionalImpact;
   /** When true, skip simulation rules (God Mode) */
   force?:        boolean;
+  /** Optional Chronicler voice override for the memory entry. */
+  tone?:         Tone;
 }
 
 /** Request body for POST /characters/:id/criminal-record */
@@ -653,6 +655,8 @@ export interface BulkActionRequest {
   delta:            Record<string, BulkDeltaField>;
   event_summary:    string;
   emotional_impact: EmotionalImpact;
+  /** Optional Chronicler voice override; defaults to reportage for bulk actions. */
+  tone?:            Tone;
 }
 
 /** Response shape for POST /api/god-mode/bulk */

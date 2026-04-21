@@ -6,6 +6,12 @@ import { Router, Request, Response } from 'express';
 import Anthropic from '@anthropic-ai/sdk';
 import prisma from '../db/client';
 import { applyDelta, addCriminalRecord } from '../services/simulation.service';
+import {
+  getVoicePrompt,
+  toneForGodModeSingle,
+  type Tone,
+} from '../services/tone.service';
+import { TONES } from '@civ-sim/shared';
 import { Prisma } from '@prisma/client';
 import type { PersonDelta, EmotionalImpact, CriminalRecord } from '../types/person';
 
@@ -58,6 +64,11 @@ const tools: Anthropic.Tool[] = [
         event_summary:    { type: 'string', description: 'What happened to cause this change' },
         emotional_impact: { type: 'string', enum: ['traumatic', 'negative', 'neutral', 'positive', 'euphoric'] },
         force:            { type: 'boolean', description: 'Bypass simulation rules (God Mode). Default false.' },
+        tone:             {
+          type: 'string',
+          enum: [...TONES],
+          description: 'Narrative voice for the memory entry. tabloid = scandal, literary = quiet weight, epic = mythic, reportage = terse dispatch, neutral = plain log. Match the voice to the event — a tragic death is literary, an affair is tabloid, a coronation is epic. Defaults to tabloid if omitted.',
+        },
       },
       required: ['id', 'delta', 'event_summary', 'emotional_impact'],
     },
@@ -75,6 +86,11 @@ const tools: Anthropic.Tool[] = [
         status:        { type: 'string', enum: ['pending', 'convicted', 'acquitted'] },
         notes:         { type: 'string' },
         event_summary: { type: 'string' },
+        tone:          {
+          type: 'string',
+          enum: [...TONES],
+          description: 'Narrative voice. Crimes usually read tabloid; literary works for tragic or reluctant offenses. Defaults to tabloid if omitted.',
+        },
       },
       required: ['id', 'offense', 'date', 'severity', 'status', 'event_summary'],
     },
@@ -145,6 +161,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           event_summary:    input.event_summary as string,
           emotional_impact: input.emotional_impact as EmotionalImpact,
           force:            (input.force as boolean) ?? false,
+          tone:             input.tone as Tone | undefined,
         });
         return `Updated ${result.person.name} — ${JSON.stringify(input.delta)}`;
       }
@@ -157,7 +174,12 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           status:   input.status as CriminalRecord['status'],
           notes:    input.notes as string | undefined,
         };
-        const result = await addCriminalRecord(input.id as string, record, input.event_summary as string);
+        const result = await addCriminalRecord(
+          input.id as string,
+          record,
+          input.event_summary as string,
+          input.tone as Tone | undefined,
+        );
         return `Criminal record added for ${result.person.name}: ${input.offense}`;
       }
 
@@ -214,6 +236,14 @@ router.post('/', async (req: Request, res: Response) => {
       { role: 'user', content: userMessage },
     ];
 
+    // Voice reference block — lets Claude choose per-event tones deliberately
+    // when it invokes apply_delta / add_criminal_record. God Mode writes
+    // default to tabloid server-side if Claude omits the `tone` field.
+    const defaultTone: Tone = toneForGodModeSingle();
+    const voiceReference = TONES
+      .map((t) => `### ${t}\n${getVoicePrompt(t)}`)
+      .join('\n\n');
+
     // Agentic loop with streaming
     while (true) {
       const stream = anthropic.messages.stream({
@@ -223,7 +253,15 @@ router.post('/', async (req: Request, res: Response) => {
 
 ${worldContext}
 
-When the user gives instructions, use your tools to act on them, then narrate what happened in a vivid, immersive way. Be concise but evocative. Refer to characters by name. After making changes, briefly describe the outcome as if telling a story.`,
+When the user gives instructions, use your tools to act on them, then narrate what happened in a vivid, immersive way. Be concise but evocative. Refer to characters by name. After making changes, briefly describe the outcome as if telling a story.
+
+## Narrative voice
+
+Every memory you write must carry a voice tag. When you call \`apply_delta\` or \`add_criminal_record\`, pass a \`tone\` chosen from the taxonomy below so the chronicle reads in the right register. If you omit \`tone\`, the server defaults to "${defaultTone}".
+
+${voiceReference}
+
+Match the voice to the event, not to the user's request — a quiet death is literary even if the user asked playfully; a scandalous affair is tabloid even if phrased politely. Your own narration back to the user should also lean into the voice you chose for the memory, so the chronicle and your reply feel of a piece.`,
         tools,
         messages,
       });

@@ -42,7 +42,7 @@ router.post('/bulk', validate(BulkActionSchema), async (req: Request, res: Respo
 });
 
 router.post('/:id', validate(DeltaRequestSchema), async (req: Request, res: Response) => {
-  const { delta, event_summary, emotional_impact } = req.body;
+  const { delta, event_summary, emotional_impact, tone } = req.body;
 
   const result = await applyDelta({
     personId:        req.params.id,
@@ -50,6 +50,7 @@ router.post('/:id', validate(DeltaRequestSchema), async (req: Request, res: Resp
     event_summary,
     emotional_impact,
     force: true,            // God Mode always forces
+    tone,                   // optional caller override; else tabloid by default
   });
 
   res.json(result);

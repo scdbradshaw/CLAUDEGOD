@@ -20,10 +20,11 @@ export {
   type BulkDeltaField,
   type BulkActionRequest,
   type BulkActionResult,
+  type Tone,
 } from '@civ-sim/shared';
 
 import { z } from 'zod';
-import { Sexuality } from '@civ-sim/shared';
+import { Sexuality, TONES } from '@civ-sim/shared';
 
 // --------------- Shared validators ---------------
 
@@ -88,6 +89,8 @@ export const PersonDeltaSchema = z.object({
 
 // --------------- Delta Request ---------------
 
+const ToneSchema = z.enum(TONES as unknown as [string, ...string[]]);
+
 export const DeltaRequestSchema = z.object({
   delta:            PersonDeltaSchema.refine(
     (d) => Object.keys(d).length > 0,
@@ -96,6 +99,7 @@ export const DeltaRequestSchema = z.object({
   event_summary:    z.string().min(1).max(500),
   emotional_impact: z.enum(['traumatic', 'negative', 'neutral', 'positive', 'euphoric']),
   force:            z.boolean().default(false),
+  tone:             ToneSchema.optional(),
 });
 
 // --------------- Criminal Record Request ---------------
@@ -103,6 +107,7 @@ export const DeltaRequestSchema = z.object({
 export const CriminalRecordRequestSchema = z.object({
   record:        CriminalRecordSchema,
   event_summary: z.string().min(1).max(500),
+  tone:          ToneSchema.optional(),
 });
 
 // --------------- Bulk Create ---------------
@@ -177,4 +182,5 @@ export const BulkActionSchema = z.object({
     .refine((d) => Object.keys(d).length > 0, { message: 'Delta must contain at least one field' }),
   event_summary:    z.string().min(1).max(500),
   emotional_impact: z.enum(['traumatic', 'negative', 'neutral', 'positive', 'euphoric']),
+  tone:             ToneSchema.optional(),
 });

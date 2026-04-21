@@ -40,6 +40,7 @@ import {
   type ReligionDissolveResult,
   type FactionSplitResult,
 } from '../services/group-lifecycle.service';
+import { writeMemoriesBatch } from '../services/memory.service';
 
 const router = Router();
 
@@ -384,6 +385,10 @@ router.post('/tick', async (_req: Request, res: Response) => {
       magnitude:       number;
       counterparty_id: string | null;
       tone:            Tone;
+      /// Subject's age at the moment of the event — drives decade_of_life
+      /// at write time so compressLifeDecade() can slice raw rows without
+      /// looking up the person's birth year.
+      age_at_event:    number;
     };
     const pendingMemories: PendingMemory[] = [];
 
@@ -435,6 +440,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
           magnitude,
           counterparty_id: antagonist.id,
           tone,
+          age_at_event:    protagonist.age,
         });
         // Antagonist also remembers (mirrored valence)
         pendingMemories.push({
@@ -444,6 +450,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
           magnitude,
           counterparty_id: protagonist.id,
           tone,
+          age_at_event:    antagonist.age,
         });
       }
 
@@ -483,60 +490,91 @@ router.post('/tick', async (_req: Request, res: Response) => {
       }
     }
 
-    // 5. Apply all deltas — stats + traits in one transaction
+    // 5. Apply all deltas — stats + traits via a single bulk UPDATE.
+    //    Each row shape: { id, health?, morality?, ..., traits? }. Keys
+    //    absent from the JSON fall back to the column's current value via
+    //    COALESCE, so we never overwrite a stat that didn't change. This
+    //    replaces the per-person tx.person.update loop (Phase 6 scale).
     const finalHealth: Record<string, number> = {};
     const spawnResults: SpawnResult[] = [];
-    await prisma.$transaction(async (tx) => {
-      for (const p of living) {
-        const sd = statDeltas[p.id] ?? {};
-        const td = traitDeltas[p.id] ?? {};
-        const updateData: Record<string, unknown> = {};
+    type BulkUpdateRow = {
+      id:           string;
+      health?:      number;
+      morality?:    number;
+      happiness?:   number;
+      reputation?:  number;
+      influence?:   number;
+      intelligence?: number;
+      traits?:      Record<string, number>;
+    };
+    const bulkUpdates: BulkUpdateRow[] = [];
 
-        for (const stat of WRITABLE_STATS) {
-          const delta = sd[stat];
-          if (delta === undefined || delta === 0) continue;
-          const cur  = (p as unknown as Record<string, number>)[stat] ?? 0;
-          updateData[stat] = Math.max(0, Math.min(100, cur + delta));
-        }
+    for (const p of living) {
+      const sd = statDeltas[p.id] ?? {};
+      const td = traitDeltas[p.id] ?? {};
+      const row: BulkUpdateRow = { id: p.id };
 
-        finalHealth[p.id] = (updateData.health as number | undefined) ?? p.health;
-
-        // Trait drifts (trauma/triumph modifiers) — clamp 0-100, ignore unknown keys
-        const existingTraits = (p.traits ?? {}) as Record<string, number>;
-        let traitsChanged = false;
-        const newTraits: Record<string, number> = { ...existingTraits };
-        for (const [trait, d] of Object.entries(td)) {
-          if (!ALL_IDENTITY_KEYS.includes(trait)) continue;
-          const cur = newTraits[trait] ?? 50;
-          const next = Math.max(0, Math.min(100, cur + d));
-          if (next !== cur) {
-            newTraits[trait] = next;
-            traitsChanged = true;
-          }
-        }
-        if (traitsChanged) {
-          updateData.traits = newTraits as unknown as Prisma.InputJsonValue;
-        }
-
-        if (Object.keys(updateData).length > 0) {
-          await tx.person.update({ where: { id: p.id }, data: updateData });
-        }
+      for (const stat of WRITABLE_STATS) {
+        const delta = sd[stat];
+        if (delta === undefined || delta === 0) continue;
+        const cur  = (p as unknown as Record<string, number>)[stat] ?? 0;
+        (row as Record<string, unknown>)[stat] = Math.max(0, Math.min(100, cur + delta));
       }
 
-      // 5a. Memory writes — batched inside the same transaction
+      finalHealth[p.id] = (row.health as number | undefined) ?? p.health;
+
+      // Trait drifts (trauma/triumph modifiers) — clamp 0-100, ignore unknown keys
+      const existingTraits = (p.traits ?? {}) as Record<string, number>;
+      let traitsChanged = false;
+      const newTraits: Record<string, number> = { ...existingTraits };
+      for (const [trait, d] of Object.entries(td)) {
+        if (!ALL_IDENTITY_KEYS.includes(trait)) continue;
+        const cur = newTraits[trait] ?? 50;
+        const next = Math.max(0, Math.min(100, cur + d));
+        if (next !== cur) {
+          newTraits[trait] = next;
+          traitsChanged = true;
+        }
+      }
+      if (traitsChanged) row.traits = newTraits;
+
+      // Only enqueue if something actually changed (more than just id).
+      if (Object.keys(row).length > 1) bulkUpdates.push(row);
+    }
+
+    await prisma.$transaction(async (tx) => {
+      if (bulkUpdates.length > 0) {
+        // One round-trip for every person that moved, regardless of N.
+        await tx.$executeRaw`
+          UPDATE persons p SET
+            health       = COALESCE((u.updates->>'health')::int, p.health),
+            morality     = COALESCE((u.updates->>'morality')::int, p.morality),
+            happiness    = COALESCE((u.updates->>'happiness')::int, p.happiness),
+            reputation   = COALESCE((u.updates->>'reputation')::int, p.reputation),
+            influence    = COALESCE((u.updates->>'influence')::int, p.influence),
+            intelligence = COALESCE((u.updates->>'intelligence')::int, p.intelligence),
+            traits       = COALESCE((u.updates->'traits')::jsonb, p.traits),
+            updated_at   = NOW()
+          FROM jsonb_array_elements(${JSON.stringify(bulkUpdates)}::jsonb) AS u(updates)
+          WHERE p.id = (u.updates->>'id')::uuid
+        `;
+      }
+
+      // 5a. Memory writes — batched through the memory service so weight
+      // and decade_of_life are set consistently.
       if (pendingMemories.length > 0) {
-        await tx.memoryBank.createMany({
-          data: pendingMemories.map(m => ({
-            person_id:        m.person_id,
-            event_summary:    m.event_summary,
-            emotional_impact: m.emotional_impact,
-            delta_applied:    { score: m.event_summary } as Prisma.InputJsonValue,
-            magnitude:        m.magnitude,
-            counterparty_id:  m.counterparty_id,
-            world_year:       world.current_year,
-            tone:             m.tone,
-          })),
-        });
+        await writeMemoriesBatch(tx, pendingMemories.map((m) => ({
+          personId:        m.person_id,
+          eventSummary:    m.event_summary,
+          emotionalImpact: m.emotional_impact,
+          deltaApplied:    { score: m.event_summary },
+          magnitude:       m.magnitude,
+          counterpartyId:  m.counterparty_id,
+          worldYear:       world.current_year,
+          tone:            m.tone,
+          ageAtEvent:      m.age_at_event,
+          eventKind:       'interaction',
+        })));
       }
 
       // 5b. Viral membership joins — split by kind, skipDuplicates catches
@@ -588,7 +626,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
     for (const p of living) {
       if (finalHealth[p.id] <= 0) {
         await prisma.$transaction(async (tx) => {
-          const dissolved = await handlePersonDeath(tx, p.id, p.name, world.current_year);
+          const dissolved = await handlePersonDeath(tx, p.id, p.name, world.current_year, world.id);
           religionDissolves.push(...dissolved);
           await tx.deceasedPerson.create({
             data: {
@@ -629,7 +667,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
 
       for (const dead of naturallyDying) {
         await prisma.$transaction(async (tx) => {
-          const dissolved = await handlePersonDeath(tx, dead.id, dead.name, newYear);
+          const dissolved = await handlePersonDeath(tx, dead.id, dead.name, newYear, world.id);
           religionDissolves.push(...dissolved);
           await tx.deceasedPerson.create({
             data: {
@@ -930,30 +968,32 @@ router.post('/force', async (req: Request, res: Response) => {
     // Memory entries
     if (band.creates_memory) {
       const tone = toneForOutcomeBand(band, iType);
-      await tx.memoryBank.createMany({
-        data: [
-          {
-            person_id:        subject.id,
-            event_summary:    summary,
-            emotional_impact: emotional,
-            delta_applied:    { score, band: band.label } as unknown as Prisma.InputJsonValue,
-            magnitude,
-            counterparty_id:  antagonist.id,
-            world_year:       world.current_year,
-            tone,
-          },
-          {
-            person_id:        antagonist.id,
-            event_summary:    `Forced: ${iType.label} with ${subject.name} — ${band.label} (${score})`,
-            emotional_impact: invertImpact(emotional),
-            delta_applied:    { score, band: band.label } as unknown as Prisma.InputJsonValue,
-            magnitude,
-            counterparty_id:  subject.id,
-            world_year:       world.current_year,
-            tone,
-          },
-        ],
-      });
+      await writeMemoriesBatch(tx, [
+        {
+          personId:        subject.id,
+          eventSummary:    summary,
+          emotionalImpact: emotional,
+          deltaApplied:    { score, band: band.label },
+          magnitude,
+          counterpartyId:  antagonist.id,
+          worldYear:       world.current_year,
+          tone,
+          ageAtEvent:      subject.age,
+          eventKind:       'interaction',
+        },
+        {
+          personId:        antagonist.id,
+          eventSummary:    `Forced: ${iType.label} with ${subject.name} — ${band.label} (${score})`,
+          emotionalImpact: invertImpact(emotional),
+          deltaApplied:    { score, band: band.label },
+          magnitude,
+          counterpartyId:  subject.id,
+          worldYear:       world.current_year,
+          tone,
+          ageAtEvent:      antagonist.age,
+          eventKind:       'interaction',
+        },
+      ]);
     }
   });
 

@@ -5,7 +5,7 @@
 
 import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
-import { generateHeadlinesForYear, ensureDecadeSummaries } from './headlines.service';
+import { writeMemory } from './memory.service';
 import { DEFAULT_GLOBAL_TRAITS, DEFAULT_GLOBAL_TRAIT_MULTIPLIERS } from '@civ-sim/shared';
 
 // ── Active-world helper ────────────────────────────────────────────────────
@@ -56,6 +56,10 @@ export async function advanceTime(years: number) {
   const world = await getActiveWorld();
   const worldId = world.id;
   const startYear = world.current_year;
+  const startPopulation = await prisma.person.count({
+    where: { world_id: worldId, health: { gt: 0 } },
+  });
+  const startMarket = world.market_index;
 
   // 1. Age all characters in this world (capped at death_age)
   await prisma.$executeRaw`
@@ -76,50 +80,126 @@ export async function advanceTime(years: number) {
     `;
 
   for (const char of dying) {
-    await prisma.$transaction([
-      prisma.person.update({
+    await prisma.$transaction(async (tx) => {
+      await tx.person.update({
         where: { id: char.id },
         data:  { health: 0 },
-      }),
-      prisma.memoryBank.create({
-        data: {
-          person_id:       char.id,
-          event_summary:   `${char.name} passed away at age ${char.age}, having lived the full span of their years.`,
-          emotional_impact: 'traumatic',
-          delta_applied:   { health: -char.age },
-          world_year:      startYear + years - 1,
-          tone:            'literary',
-        },
-      }),
-    ]);
+      });
+      await writeMemory(tx, {
+        personId:        char.id,
+        eventSummary:    `${char.name} passed away at age ${char.age}, having lived the full span of their years.`,
+        emotionalImpact: 'traumatic',
+        deltaApplied:    { health: -char.age },
+        magnitude:       1.0,
+        tone:            'literary',
+        worldYear:       startYear + years - 1,
+        eventKind:       'death',
+        ageAtEvent:      char.age,
+      });
+    });
   }
 
-  // 3. Advance world year
+  // 3. Trigger birthday-driven life-decade compressions. For every person
+  //    who crossed a multiple-of-10 age during this advance, compress their
+  //    just-completed life decade. One row/summary per crossed decade.
+  await compressBirthdayCrossings(worldId, startYear, years, world.population_tier);
+
+  // 4. Advance world year
   const updated = await prisma.world.update({
     where: { id: worldId },
     data:  { current_year: startYear + years },
   });
 
-  // 4. Generate headlines for each year just completed (cap 10)
-  const yearsToChronicle = Math.min(years, 10);
-  const headlines: Awaited<ReturnType<typeof generateHeadlinesForYear>>[] = [];
+  // 5. Write one YearlyReport per year advanced. Deterministic, no Claude.
+  //    Headlines are opt-in via /api/time/headlines/generate (queued).
+  const endPopulation = await prisma.person.count({
+    where: { world_id: worldId, health: { gt: 0 } },
+  });
+  const deathsByCause = { old_age: dying.length };
 
-  for (let y = startYear; y < startYear + yearsToChronicle; y++) {
-    const yh = await generateHeadlinesForYear(y, worldId);
-    headlines.push(yh);
+  // We only have start + end snapshots across the whole advance, so every
+  // year-row in this batch gets the same aggregate split evenly.
+  const yearsAdvanced = years;
+  const avgPopStart   = Math.round(startPopulation - ((startPopulation - endPopulation) * 0) / yearsAdvanced);
+  const deathsPerYear = Math.ceil(dying.length / yearsAdvanced);
+
+  const reports = [];
+  for (let y = startYear; y < startYear + yearsAdvanced; y++) {
+    // Skip if a richer report already exists (e.g. written by the tick
+    // engine at /api/interactions/tick year-boundary).
+    const existing = await prisma.yearlyReport.findUnique({
+      where: { world_id_year: { world_id: worldId, year: y } },
+    });
+    if (existing) { reports.push(existing); continue; }
+
+    const row = await prisma.yearlyReport.create({
+      data: {
+        world_id:            worldId,
+        year:                y,
+        population_start:    avgPopStart,
+        population_end:      endPopulation,
+        births:              0,
+        deaths:              deathsPerYear,
+        deaths_by_cause:     deathsByCause,
+        market_index_start:  startMarket,
+        market_index_end:    updated.market_index,
+        force_scores:        (updated.global_traits as object),
+      },
+    });
+    reports.push(row);
   }
 
-  // 5. Generate decade summaries for every fully-elapsed decade.
-  //    Annuals are preserved — the Chronicle keeps both layers forever and
-  //    the frontend toggles between ANNUAL and DECADE views.
-  await ensureDecadeSummaries(updated.current_year - 1, worldId);
-
   return {
-    previous_year:       startYear,
-    current_year:        updated.current_year,
-    deaths:              dying.map(d => d.name),
-    headlines_generated: headlines.flat().length,
+    previous_year:  startYear,
+    current_year:   updated.current_year,
+    deaths:         dying.map(d => d.name),
+    yearly_reports: reports,
   };
+}
+
+// ── Birthday-triggered life-decade compression ─────────────────────
+// For each person who crosses an age boundary at a multiple of 10 during
+// this advance, fire compressLifeDecade so the just-completed decade is
+// snapshotted to LifeDecadeSummary and raw memories are trimmed.
+//
+// Age math: a person starts at age A_0. After advancing Y years they are
+// at A_1 = min(death_age, A_0 + Y). They crossed boundary k (where k*10
+// > A_0 and k*10 <= A_1) exactly when age passed k*10. We emit one
+// compression per crossed boundary, oldest-first so chain continuity is
+// preserved for subsequent decades.
+async function compressBirthdayCrossings(
+  worldId:       string,
+  startYear:     number,
+  years:         number,
+  tier:          import('@prisma/client').PopulationTier,
+): Promise<void> {
+  // NOTE: this pulls age+death_age per person for everyone who actually
+  // crossed any boundary. It doesn't pull bodies. For 5k people that's
+  // one ~40kB query.
+  const crossers = await prisma.person.findMany({
+    where: {
+      world_id: worldId,
+      age: { gte: 10 },
+    },
+    select: { id: true, age: true, death_age: true },
+  });
+
+  const { compressLifeDecade } = await import('./memory.service');
+
+  for (const p of crossers) {
+    const oldAge = Math.max(0, Math.min(p.death_age, p.age - years));
+    const newAge = p.age;
+    // Boundaries crossed: every multiple of 10 in (oldAge, newAge].
+    for (let boundary = Math.floor(oldAge / 10) * 10 + 10; boundary <= newAge; boundary += 10) {
+      await compressLifeDecade({
+        personId:     p.id,
+        decadeEndAge: boundary,
+        // Approximate: world-year at the moment this boundary was crossed.
+        worldYearEnd: startYear + (boundary - oldAge),
+        tier,
+      });
+    }
+  }
 }
 
 // ── Rewind time ────────────────────────────────────────────────────────────

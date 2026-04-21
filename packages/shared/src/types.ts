@@ -596,6 +596,53 @@ export interface CharacterListItem {
   global_scores: Record<string, number>;
 }
 
+/**
+ * Richer list item returned by GET /api/characters/search — carries the
+ * fields the /people filter UI needs to render filter chips and card icons
+ * without N+1-ing a second fetch per card.
+ */
+export interface PeopleListItem {
+  id:            string;
+  name:          string;
+  age:           number;
+  gender:        string;
+  race:          string;
+  religion:      string;
+  health:        number;
+  morality:      number;
+  happiness:     number;
+  influence:     number;
+  wealth:        number;
+  updated_at:    string;
+  global_scores: Record<string, number>;
+  factions:      { id: string; name: string }[];
+}
+
+export type PeopleStatus = 'alive' | 'dead' | 'all';
+export type PeopleSortField =
+  | 'name'
+  | 'age'
+  | 'morality'
+  | 'wealth'
+  | 'influence'
+  | 'health'
+  | 'updated_at';
+
+export interface PeopleSearchParams {
+  status?:    PeopleStatus;
+  age_min?:   number;
+  age_max?:   number;
+  /** comma-separated list server-side; arrays client-side */
+  races?:     string[];
+  religions?: string[];
+  factions?:  string[];
+  q?:         string;
+  sort?:      PeopleSortField;
+  order?:     'asc' | 'desc';
+  page?:      number;
+  limit?:     number;
+}
+
 export interface PaginatedResponse<T> {
   data:  T[];
   total: number;

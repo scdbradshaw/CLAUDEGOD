@@ -19,6 +19,7 @@ import type { Prisma } from '@prisma/client';
 import type { VirusProfile } from '@civ-sim/shared';
 import { computeAlignment, type PersonSnapshot } from './membership.service';
 import { deriveVirusProfile, generateGroupName } from './group-formation.service';
+import { writeMemoriesBatch, writeGroupMemory } from './memory.service';
 
 // ── Tunables ────────────────────────────────────────────────
 /** How much a member's alignment must exceed the leader's to accrue pressure. */
@@ -57,12 +58,14 @@ export async function handlePersonDeath(
   personId:    string,
   personName:  string,
   currentYear: number,
+  worldId?:    string,
 ): Promise<ReligionDissolveResult[]> {
   const religions = await tx.religion.findMany({
     where: { founder_id: personId, is_active: true },
     select: {
       id:   true,
       name: true,
+      world_id: true,
       memberships: { select: { person_id: true } },
     },
   });
@@ -82,22 +85,36 @@ export async function handlePersonDeath(
       },
     });
 
+    // Group-scope memory: write-once record of the dissolution so future
+    // narration (decade summaries, religion chronicles) can still reach it
+    // after per-member memories have compressed away.
+    await writeGroupMemory(tx, {
+      groupType:    'religion',
+      groupId:      religion.id,
+      worldId:      worldId ?? religion.world_id,
+      eventKind:    'dissolved_founder_death',
+      eventSummary: `${religion.name} dissolved when its founder ${personName} died.`,
+      worldYear:    currentYear,
+      tone:         'epic',
+      weight:       95,
+      payload:      { founder_id: personId, members_lost: religion.memberships.length },
+    });
+
     // Write faith-lost memories for every member who is not the founder
     // (the founder is about to be deleted; their memories cascade anyway).
     const otherMembers = religion.memberships.filter(m => m.person_id !== personId);
     if (otherMembers.length > 0) {
-      await tx.memoryBank.createMany({
-        data: otherMembers.map(m => ({
-          person_id:        m.person_id,
-          event_summary:    `${religion.name} dissolved when ${personName} died. Faith shaken.`,
-          emotional_impact: 'traumatic' as const,
-          delta_applied:    {} as Prisma.InputJsonValue,
-          magnitude:        FAITH_LOST_MAGNITUDE,
-          counterparty_id:  personId,
-          world_year:       currentYear,
-          tone:             'epic' as const,
-        })),
-      });
+      await writeMemoriesBatch(tx, otherMembers.map((m) => ({
+        personId:        m.person_id,
+        eventSummary:    `${religion.name} dissolved when ${personName} died. Faith shaken.`,
+        emotionalImpact: 'traumatic' as const,
+        deltaApplied:    {},
+        magnitude:       FAITH_LOST_MAGNITUDE,
+        counterpartyId:  personId,
+        worldYear:       currentYear,
+        tone:            'epic' as const,
+        eventKind:       'group_left',
+      })));
     }
 
     results.push({

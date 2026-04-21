@@ -65,6 +65,22 @@ enum GroupOrigin {
   event
 }
 
+// Job lifecycle for the Postgres-as-queue tick runner. Enqueued jobs are
+// claimed with an advisory lock; only one worker progresses a job at a time.
+enum JobStatus {
+  pending
+  running
+  done
+  failed
+}
+
+// Scope tag for WorldMemory / GroupMemory reads. Not persisted as a column;
+// kept here for type-level symmetry with MemoryBank's per-person scope.
+enum MemoryScope {
+  religion
+  faction
+}
+
 enum PopulationTier {
   intimate      // 100–500
   town          // 500–5,000
@@ -122,11 +138,14 @@ model World {
   updated_at DateTime @updatedAt
 
   // ── Per-world entity sets ────────────────────────────────────
-  persons   Person[]
-  religions Religion[]
-  factions  Faction[]
-  deceased  DeceasedPerson[]
-  headlines YearlyHeadline[]
+  persons        Person[]
+  religions      Religion[]
+  factions       Faction[]
+  deceased       DeceasedPerson[]
+  headlines      YearlyHeadline[]
+  world_memories WorldMemory[]
+  tick_jobs      TickJob[]
+  yearly_reports YearlyReport[]
 
   @@index([is_active])
   @@map("worlds")
@@ -180,6 +199,7 @@ model Person {
 
   // ── Relations ────────────────────────────────────────────
   memory_bank          MemoryBank[]
+  life_decade_summaries LifeDecadeSummary[]
   links_out            InnerCircleLink[]    @relation("LinkOwner")
   links_in             InnerCircleLink[]    @relation("LinkTarget")
   founded_religions    Religion[]           @relation("ReligionFounder")
@@ -239,6 +259,17 @@ model MemoryBank {
   /// on rows older than Phase 5. New writes should always tag.
   tone            Tone?
 
+  // ── Phase 6: retention / compression ─────────────────────
+  /// Composite 0-100 weight computed at write-time from outcome band,
+  /// |stat delta|, group-lifecycle flag, counterparty prominence, and
+  /// event-type floors (death/birth/marriage). Used for ranking when a
+  /// LifeDecadeSummary is created and for getMemoryContext top-N selects.
+  weight          Int     @default(50)
+  /// The 0-indexed decade of the subject's life in which this memory
+  /// occurred (floor(age_at_event / 10)). Lets compressLifeDecade()
+  /// slice the table by decade-of-life without recomputing ages.
+  decade_of_life  Int?
+
   timestamp  DateTime @default(now())
   world_year Int? // the world calendar year this memory occurred in
 
@@ -246,6 +277,8 @@ model MemoryBank {
   @@index([timestamp])
   @@index([world_year])
   @@index([counterparty_id])
+  @@index([person_id, decade_of_life])
+  @@index([person_id, weight])
   @@map("memory_bank")
 }
 
@@ -444,4 +477,188 @@ model FactionMembership {
   @@index([faction_id])
   @@index([person_id])
   @@map("faction_memberships")
+}
+
+// --------------- Life Decade Summary ---------------
+// Written at every birthday where age % 10 === 0 && age > 0. Compresses
+// the just-completed decade of PersonMemory into a fixed-size snapshot
+// (top-N by weight, tier-dependent). Raw memories in that decade are then
+// deleted. Chains via prior_summary_id so a 70-year-old has 7 linked rows.
+model LifeDecadeSummary {
+  id String @id @default(uuid()) @db.Uuid
+
+  person    Person @relation(fields: [person_id], references: [id], onDelete: Cascade)
+  person_id String @db.Uuid
+
+  /// Age at which this decade ended (always a multiple of 10, > 0).
+  /// e.g. 30 means "the decade of life from age 20 through 29".
+  decade_end_age Int
+  /// Same concept as `decade_end_age / 10 - 1`; indexed for range queries.
+  decade_of_life Int
+
+  /// World year the decade began.
+  world_year_start Int
+  /// World year the decade ended.
+  world_year_end   Int
+
+  /// JSONB array of the top-N preserved memories for this decade.
+  /// Shape: [{ event_summary, emotional_impact, tone, weight,
+  ///           world_year, counterparty_id, delta_applied }]
+  /// N is tier-driven: intimate=10, town=5, civilization=3.
+  top_memories Json @default("[]")
+
+  /// Aggregate stats for the decade — used by getMemoryContext to answer
+  /// "what happened to X in their 30s" without re-reading raw memories.
+  /// Shape: { interaction_count, avg_magnitude, peak_positive, peak_negative,
+  ///          stat_deltas: { morality, influence, wealth, ... } }
+  aggregates Json @default("{}")
+
+  /// Prior decade summary (age-10 earlier). Enables decade chaining so future
+  /// narration has the whole life sketch without a separate findMany call.
+  prior_summary_id String? @db.Uuid
+
+  created_at DateTime @default(now())
+
+  @@unique([person_id, decade_end_age])
+  @@index([person_id])
+  @@index([person_id, decade_of_life])
+  @@map("life_decade_summaries")
+}
+
+// --------------- Group Memory ---------------
+// Religion/faction-scoped narrative memory. Write-once, keep-forever. Tiny
+// volume (group-lifecycle events only: founded, first-member, schism, leader
+// death, war). Keyed to group_id via polymorphic (group_type, group_id) so
+// both religions and factions share one memory stream.
+model GroupMemory {
+  id String @id @default(uuid()) @db.Uuid
+
+  /// 'religion' | 'faction'
+  group_type String
+  group_id   String @db.Uuid
+
+  world_id String @db.Uuid
+
+  event_summary   String
+  event_kind      String // 'founded' | 'first_member' | 'schism' | 'leader_death' | 'war' | ...
+  tone            Tone   @default(epic)
+  world_year      Int
+  /// 0-100 — how pivotal this was in the group's arc. Reads rank by this.
+  weight          Int    @default(70)
+  /// Optional counterparty group for war/schism events.
+  counterparty_id String? @db.Uuid
+
+  /// JSONB — free-form event payload (member counts, alignment deltas, etc.)
+  payload Json @default("{}")
+
+  created_at DateTime @default(now())
+
+  @@index([group_type, group_id])
+  @@index([world_id])
+  @@index([world_year])
+  @@map("group_memories")
+}
+
+// --------------- World Memory ---------------
+// World-scale canonical events. ~0-5/year. Never decays. Read by decade
+// summary prompts to thread narrative forward across centuries.
+model WorldMemory {
+  id String @id @default(uuid()) @db.Uuid
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  event_summary String
+  /// 'plague' | 'nuke' | 'crash' | 'religion_founded' | 'faction_founded' |
+  /// 'war_declared' | 'decade_canon' | 'player_edict' | ...
+  event_kind    String
+  tone          Tone   @default(epic)
+  world_year    Int
+  /// 0-100. Reads rank by this when the table grows.
+  weight        Int    @default(80)
+
+  payload Json @default("{}")
+
+  created_at DateTime @default(now())
+
+  @@index([world_id])
+  @@index([world_id, world_year])
+  @@map("world_memories")
+}
+
+// --------------- Tick Job (Postgres-as-queue) ---------------
+// Long-running work (Claude narration, decade-headline generation) is
+// enqueued here and consumed by a single-worker loop using pg advisory
+// locks. Synchronous tick simulation does NOT go through this queue —
+// only opt-in narrative generation does.
+model TickJob {
+  id String @id @default(uuid()) @db.Uuid
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  /// 'generate_year_headlines' | 'generate_decade_headlines' | ...
+  kind   String
+  status JobStatus @default(pending)
+
+  /// Input payload (e.g. { year: 842, category: 'MOST_DRAMATIC_FALL' })
+  payload Json @default("{}")
+  /// Output on success (e.g. { headline_ids: [...] })
+  result  Json?
+
+  /// Set to a random bigint by the claiming worker and used with
+  /// pg_try_advisory_lock so only one worker progresses a job at a time.
+  lock_key BigInt?
+
+  error        String?
+  attempts     Int      @default(0)
+  max_attempts Int      @default(3)
+
+  created_at  DateTime  @default(now())
+  started_at  DateTime?
+  finished_at DateTime?
+
+  @@index([status])
+  @@index([world_id, status])
+  @@index([kind, status])
+  @@map("tick_jobs")
+}
+
+// --------------- Yearly Report ---------------
+// Deterministic number-report written by the synchronous tick pipeline
+// every game year. Cheap to generate, cheap to read, no Claude involved.
+// Serves as the default Dashboard "what just happened" surface and as
+// input to the opt-in headline generator.
+model YearlyReport {
+  id String @id @default(uuid()) @db.Uuid
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  year              Int
+  population_start  Int
+  population_end    Int
+  births            Int   @default(0)
+  deaths            Int   @default(0)
+  deaths_by_cause   Json  @default("{}") // { interaction, old_age, health }
+  market_index_start Float
+  market_index_end   Float
+
+  /// Top stat swings for the year — array of
+  ///   { person_id, person_name, stat, delta, from, to }
+  /// Trimmed to top 10 by |delta| at write time.
+  top_swings     Json @default("[]")
+  /// Group lifecycle events this year
+  ///   [{ group_type, group_id, name, kind }]
+  group_events   Json @default("[]")
+  /// Any bulk God Mode actions applied this year
+  bulk_actions   Json @default("[]")
+  /// Global force composite snapshot { warScore, loveScore, ... }
+  force_scores   Json @default("{}")
+
+  created_at DateTime @default(now())
+
+  @@unique([world_id, year])
+  @@index([world_id])
+  @@map("yearly_reports")
 }

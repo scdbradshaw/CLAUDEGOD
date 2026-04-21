@@ -26,7 +26,8 @@ export default function TimeControls() {
       const deathNote = data.deaths.length > 0
         ? ` ${data.deaths.length} soul(s) perished: ${data.deaths.join(', ')}.`
         : '';
-      setResult(`Advanced to Year ${data.current_year}. ${data.headlines_generated} headlines written.${deathNote}`);
+      const yearsAdvanced = data.yearly_reports.length;
+      setResult(`Advanced to Year ${data.current_year}. ${yearsAdvanced} year-report${yearsAdvanced !== 1 ? 's' : ''} filed.${deathNote} Generate headlines from the Chronicle.`);
     },
     onError: (e: Error) => setResult(`Error: ${e.message}`),
   });

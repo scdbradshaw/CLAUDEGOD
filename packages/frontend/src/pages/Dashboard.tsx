@@ -12,6 +12,7 @@ import TimeControls from '../components/TimeControls';
 import BulkFilterPanel from '../components/BulkFilterPanel';
 import ForceInteractionPanel from '../components/ForceInteractionPanel';
 import ManualEventPanel from '../components/ManualEventPanel';
+import HeadlineGenerator from '../components/HeadlineGenerator';
 
 // ── Tick Controls ─────────────────────────────────────────────
 
@@ -247,6 +248,20 @@ export default function Dashboard() {
         <div className="flex-1 flex flex-col gap-4">
           <TickControls />
           <TimeControls />
+          {activeWorld && activeWorld.current_year > 1 && (
+            <div className="panel p-4 space-y-2">
+              <span className="text-xs text-zinc-500 uppercase tracking-widest block">Narrate</span>
+              <p className="text-[10px] text-zinc-500">
+                Queue the Chronicler to draft headlines for the most recent completed year.
+                Runs in the background — keeps ticking smooth.
+              </p>
+              <HeadlineGenerator
+                target={{ kind: 'year', value: activeWorld.current_year - 1 }}
+                label={`Generate Year ${activeWorld.current_year - 1} headlines`}
+                compact
+              />
+            </div>
+          )}
           <BulkSummon />
           <BulkFilterPanel />
           <ForceInteractionPanel />
@@ -255,6 +270,14 @@ export default function Dashboard() {
 
         {/* Nav cards */}
         <div className="flex sm:flex-col gap-3 sm:w-40">
+          <Link
+            to="/people"
+            className="panel flex-1 flex flex-col items-center justify-center gap-1 hover:border-amber-700 transition-colors py-4"
+          >
+            <span className="text-2xl">👥</span>
+            <span className="text-xs text-zinc-400 text-center leading-tight">The People</span>
+            <span className="text-[10px] text-zinc-600 text-center">Filter & Browse</span>
+          </Link>
           <Link
             to="/world"
             className="panel flex-1 flex flex-col items-center justify-center gap-1 hover:border-amber-700 transition-colors py-4"

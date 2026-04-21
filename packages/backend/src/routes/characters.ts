@@ -55,6 +55,111 @@ router.get('/', async (req: Request, res: Response) => {
   });
 });
 
+// ── GET /api/characters/search ───────────────────────────────
+// Filter-first listing used by the /people page. All filter params are
+// optional — absent means no constraint. Kept separate from the lean
+// `GET /` so the dashboard keeps its fast path.
+//
+// Query params:
+//   status    = alive | dead | all           (default alive)
+//   age_min, age_max                         (inclusive, ints)
+//   races     = csv                          (match any)
+//   religions = csv                          (match any)
+//   factions  = csv of faction UUIDs         (active memberships only)
+//   q         = name substring (case-insensitive)
+//   sort      = name|age|morality|wealth|influence|health|updated_at
+//   order     = asc|desc                     (default desc for updated_at, else asc)
+//   page, limit                              (limit capped at 200)
+router.get('/search', async (req: Request, res: Response) => {
+  const world = await getActiveWorld();
+
+  const page  = Math.max(1, parseInt(req.query.page  as string) || 1);
+  const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 40));
+  const skip  = (page - 1) * limit;
+
+  const status = (req.query.status as string) || 'alive';
+  const ageMin = req.query.age_min ? parseInt(req.query.age_min as string) : undefined;
+  const ageMax = req.query.age_max ? parseInt(req.query.age_max as string) : undefined;
+  const races     = csv(req.query.races);
+  const religions = csv(req.query.religions);
+  const factions  = csv(req.query.factions);
+  const q         = (req.query.q as string)?.trim();
+
+  const sortField = (req.query.sort as string) || 'updated_at';
+  const orderDir  = (req.query.order as string) === 'asc' ? 'asc' : (req.query.order as string) === 'desc' ? 'desc' : (sortField === 'updated_at' ? 'desc' : 'asc');
+
+  const SORT_FIELD_MAP: Record<string, keyof Prisma.PersonOrderByWithRelationInput> = {
+    name:       'name',
+    age:        'age',
+    morality:   'morality',
+    wealth:     'wealth',
+    influence:  'influence',
+    health:     'health',
+    updated_at: 'updated_at',
+  };
+  const orderBy: Prisma.PersonOrderByWithRelationInput = {
+    [SORT_FIELD_MAP[sortField] ?? 'updated_at']: orderDir as 'asc' | 'desc',
+  };
+
+  const where: Prisma.PersonWhereInput = { world_id: world.id };
+  if (status === 'alive') where.health = { gt: 0 };
+  if (status === 'dead')  where.health = { equals: 0 };
+  if (ageMin !== undefined || ageMax !== undefined) {
+    where.age = {
+      ...(ageMin !== undefined ? { gte: ageMin } : {}),
+      ...(ageMax !== undefined ? { lte: ageMax } : {}),
+    };
+  }
+  if (races.length)     where.race     = { in: races };
+  if (religions.length) where.religion = { in: religions };
+  if (q)                where.name     = { contains: q, mode: 'insensitive' };
+  if (factions.length) {
+    where.faction_memberships = { some: { faction_id: { in: factions } } };
+  }
+
+  const [persons, total] = await Promise.all([
+    prisma.person.findMany({
+      where, skip, take: limit, orderBy,
+      select: {
+        id:            true,
+        name:          true,
+        age:           true,
+        gender:        true,
+        race:          true,
+        religion:      true,
+        health:        true,
+        morality:      true,
+        happiness:     true,
+        influence:     true,
+        wealth:        true,
+        updated_at:    true,
+        global_scores: true,
+        faction_memberships: {
+          select: { faction: { select: { id: true, name: true, is_active: true } } },
+        },
+      },
+    }),
+    prisma.person.count({ where }),
+  ]);
+
+  res.json({
+    data: persons.map(p => ({
+      ...p,
+      updated_at: p.updated_at.toISOString(),
+      factions:   p.faction_memberships
+        .filter(m => m.faction.is_active)
+        .map(m => ({ id: m.faction.id, name: m.faction.name })),
+      faction_memberships: undefined,
+    })),
+    total, page, limit,
+  });
+});
+
+function csv(v: unknown): string[] {
+  if (typeof v !== 'string' || !v.trim()) return [];
+  return v.split(',').map(s => s.trim()).filter(Boolean);
+}
+
 // ── GET /api/characters/:id ──────────────────────────────────
 router.get('/:id', async (req: Request, res: Response) => {
   const person = await prisma.person.findUniqueOrThrow({
@@ -74,6 +179,16 @@ router.get('/:id', async (req: Request, res: Response) => {
   });
 });
 
+// ── Seed counts per population tier ──────────────────────────
+// Drives GET /api/characters/seed — an empty world seeds to the middle
+// of its tier's range, giving the player something to work with without
+// over-committing. A /bulk call can still stretch higher post-seed.
+const SEED_COUNT_BY_TIER: Record<'intimate' | 'town' | 'civilization', number> = {
+  intimate:      250,
+  town:          2000,
+  civilization:  5000,
+};
+
 // ── GET /api/characters/seed ─────────────────────────────────
 router.get('/seed', async (_req: Request, res: Response) => {
   const world = await getActiveWorld();
@@ -84,7 +199,8 @@ router.get('/seed', async (_req: Request, res: Response) => {
   }
 
   const worldTraits = world.global_traits as Record<string, number>;
-  const people = Array.from({ length: 100 }, () => generateCharacter(undefined, worldTraits));
+  const seedCount = SEED_COUNT_BY_TIER[world.population_tier as keyof typeof SEED_COUNT_BY_TIER] ?? 250;
+  const people = Array.from({ length: seedCount }, () => generateCharacter(undefined, worldTraits));
 
   const result = await prisma.person.createMany({
     data: people.map(p => ({
@@ -96,7 +212,7 @@ router.get('/seed', async (_req: Request, res: Response) => {
     })),
   });
 
-  res.status(201).json({ seeded: true, count: result.count });
+  res.status(201).json({ seeded: true, count: result.count, tier: world.population_tier });
 });
 
 // ── POST /api/characters/bulk ────────────────────────────────

@@ -7,6 +7,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { api, type Headline, type Tone } from '../api/client';
+import HeadlineGenerator from '../components/HeadlineGenerator';
 
 // ── Category metadata ──────────────────────────────────────────────────────
 
@@ -91,6 +92,44 @@ function HeadlineCard({ h }: { h: Headline }) {
   );
 }
 
+// ── GenerateHeadlineForm ───────────────────────────────────────────────────
+// Small inline form on the Chronicle toolbar — picks a year (or decade start)
+// based on the active view and enqueues a headline generation job.
+
+function GenerateHeadlineForm({ view, currentYear }: { view: 'ANNUAL' | 'DECADE'; currentYear: number }) {
+  const defaultYear   = Math.max(1, currentYear - 1);
+  const defaultDecade = Math.floor(Math.max(0, currentYear - 10) / 10) * 10;
+  const [year, setYear]     = useState(defaultYear);
+  const [decade, setDecade] = useState(defaultDecade);
+
+  if (view === 'ANNUAL') {
+    return (
+      <div className="flex items-center gap-2 ml-auto">
+        <input
+          type="number" min={1} max={currentYear - 1}
+          value={year}
+          onChange={e => setYear(Math.max(1, Math.min(currentYear - 1, parseInt(e.target.value) || 1)))}
+          className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500 text-center"
+        />
+        <HeadlineGenerator target={{ kind: 'year', value: year }} compact />
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 ml-auto">
+      <input
+        type="number" min={0} step={10} max={currentYear - 10}
+        value={decade}
+        onChange={e => setDecade(Math.max(0, parseInt(e.target.value) || 0))}
+        className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500 text-center"
+      />
+      <span className="text-[10px] text-zinc-500">s</span>
+      <HeadlineGenerator target={{ kind: 'decade', value: decade }} compact />
+    </div>
+  );
+}
+
 // ── Main page ──────────────────────────────────────────────────────────────
 
 export default function Headlines() {
@@ -164,6 +203,11 @@ export default function Headlines() {
             <option key={k} value={k}>{v.icon} {v.label}</option>
           ))}
         </select>
+
+        {/* Generate */}
+        {timeState && timeState.current_year > 1 && (
+          <GenerateHeadlineForm view={view} currentYear={timeState.current_year} />
+        )}
       </div>
 
       {/* Content */}

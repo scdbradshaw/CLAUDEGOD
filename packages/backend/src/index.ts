@@ -17,6 +17,8 @@ import religionsRouter     from './routes/religions';
 import factionsRouter      from './routes/factions';
 import worldsRouter        from './routes/worlds';
 import { prisma }          from './db/client';
+import { startJobWorker, registerJobHandler } from './services/jobs.service';
+import { generateHeadlinesForYear, ensureDecadeSummaries } from './services/headlines.service';
 
 const app  = express();
 const PORT = process.env.PORT ?? 3001;
@@ -59,10 +61,29 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: err.message ?? 'Internal server error' });
 });
 
+// ── Background job handlers ──────────────────────────────────
+// Registered once at boot so the worker loop in jobs.service can dispatch
+// by kind. Each handler must be idempotent — the worker may retry after
+// a crash mid-job.
+registerJobHandler('generate_year_headlines', async ({ worldId, payload }) => {
+  const results = await generateHeadlinesForYear(payload.year, worldId);
+  return { headline_count: results.length };
+});
+
+registerJobHandler('generate_decade_headlines', async ({ worldId, payload }) => {
+  // ensureDecadeSummaries iterates every elapsed decade up to lastFullYear
+  // but skips ones already summarized — so passing decadeStart+9 processes
+  // only the target decade when earlier ones are already done.
+  await ensureDecadeSummaries(payload.decadeStart + 9, worldId);
+  return { decade_start: payload.decadeStart };
+});
+
 // ── Start ────────────────────────────────────────────────────
 async function main() {
   await prisma.$connect();
   console.log('Connected to database');
+  startJobWorker();
+  console.log('Job worker started');
   app.listen(PORT, () => console.log(`Backend listening on http://localhost:${PORT}`));
 }
 

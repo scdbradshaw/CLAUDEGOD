@@ -19,6 +19,8 @@ import type {
   World,
   WorldListItem,
   PopulationTier,
+  PeopleListItem,
+  PeopleSearchParams,
 } from '@civ-sim/shared';
 
 const BASE = '/api';
@@ -61,6 +63,22 @@ export const api = {
 
     seed: () =>
       request<{ seeded: boolean; count: number }>('/characters/seed'),
+
+    search: (params: PeopleSearchParams = {}) => {
+      const q = new URLSearchParams();
+      if (params.status)                  q.set('status',    params.status);
+      if (params.age_min !== undefined)   q.set('age_min',   String(params.age_min));
+      if (params.age_max !== undefined)   q.set('age_max',   String(params.age_max));
+      if (params.races?.length)           q.set('races',     params.races.join(','));
+      if (params.religions?.length)       q.set('religions', params.religions.join(','));
+      if (params.factions?.length)        q.set('factions',  params.factions.join(','));
+      if (params.q)                       q.set('q',         params.q);
+      if (params.sort)                    q.set('sort',      params.sort);
+      if (params.order)                   q.set('order',     params.order);
+      if (params.page  !== undefined)     q.set('page',      String(params.page));
+      if (params.limit !== undefined)     q.set('limit',     String(params.limit));
+      return request<PaginatedResponse<PeopleListItem>>(`/characters/search?${q.toString()}`);
+    },
 
     delete: (id: string) =>
       request<void>(`/characters/${id}`, { method: 'DELETE' }),
@@ -107,6 +125,20 @@ export const api = {
 
     delete: (id: string) =>
       request<void>(`/rulesets/${id}`, { method: 'DELETE' }),
+  },
+
+  religions: {
+    list: (activeOnly = true) =>
+      request<Array<{ id: string; name: string; is_active: boolean; member_count: number }>>(
+        `/religions${activeOnly ? '?active=true' : ''}`,
+      ),
+  },
+
+  factions: {
+    list: (activeOnly = true) =>
+      request<Array<{ id: string; name: string; is_active: boolean; member_count: number }>>(
+        `/factions${activeOnly ? '?active=true' : ''}`,
+      ),
   },
 
   worlds: {
@@ -219,12 +251,70 @@ export const api = {
     },
 
     generateHeadlines: (year: number) =>
-      request<{ generated: number }>('/time/headlines/generate', {
+      request<{ job: JobRow }>('/time/headlines/generate', {
         method: 'POST',
         body:   JSON.stringify({ year }),
       }),
+
+    generateDecadeHeadlines: (decadeStart: number) =>
+      request<{ job: JobRow }>('/time/headlines/generate', {
+        method: 'POST',
+        body:   JSON.stringify({ decadeStart }),
+      }),
+
+    getJob: (id: string) => request<JobRow>(`/time/jobs/${id}`),
+
+    listJobs: (params?: { status?: 'pending' | 'running' | 'done' | 'failed'; kind?: string; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.status) q.set('status', params.status);
+      if (params?.kind)   q.set('kind',   params.kind);
+      if (params?.limit)  q.set('limit',  String(params.limit));
+      return request<JobRow[]>(`/time/jobs?${q.toString()}`);
+    },
+
+    listReports: (params?: { yearFrom?: number; yearTo?: number; limit?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.yearFrom) q.set('yearFrom', String(params.yearFrom));
+      if (params?.yearTo)   q.set('yearTo',   String(params.yearTo));
+      if (params?.limit)    q.set('limit',    String(params.limit));
+      return request<YearlyReportRow[]>(`/time/reports?${q.toString()}`);
+    },
   },
 };
+
+// ── Jobs / Reports types ─────────────────────────────────────
+
+export type JobStatus = 'pending' | 'running' | 'done' | 'failed';
+
+export interface JobRow {
+  id:            string;
+  world_id:      string;
+  kind:          string;
+  status:        JobStatus;
+  payload:       unknown;
+  result:        unknown;
+  error:         string | null;
+  attempts:      number;
+  max_attempts:  number;
+  created_at:    string;
+  started_at:    string | null;
+  finished_at:   string | null;
+}
+
+export interface YearlyReportRow {
+  id:                  string;
+  world_id:            string;
+  year:                number;
+  population_start:    number;
+  population_end:      number;
+  births:              number;
+  deaths:              number;
+  deaths_by_cause:     Record<string, number>;
+  market_index_start:  number;
+  market_index_end:    number;
+  force_scores:        Record<string, number>;
+  created_at:          string;
+}
 
 // ── World types ──────────────────────────────────────────────
 
@@ -271,10 +361,11 @@ export interface WorldStateResponse {
 }
 
 export interface AdvanceResult {
-  previous_year:       number;
-  current_year:        number;
-  deaths:              string[];
-  headlines_generated: number;
+  previous_year:  number;
+  current_year:   number;
+  deaths:         string[];
+  /** One YearlyReport per year advanced (idempotent — reuses existing rows). */
+  yearly_reports: YearlyReportRow[];
 }
 
 export interface RewindResult {

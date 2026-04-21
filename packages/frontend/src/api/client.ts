@@ -1,0 +1,248 @@
+// ============================================================
+// API CLIENT — thin wrapper around fetch
+// ============================================================
+
+import type {
+  Person,
+  MemoryEntry,
+  DeltaRequest,
+  MutationResult,
+  CharacterListItem,
+  PaginatedResponse,
+  CriminalRecordEntry,
+  RulesetDef,
+  TickResult,
+  EconomyState,
+  DeceasedPerson,
+} from '@civ-sim/shared';
+
+const BASE = '/api';
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText }));
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+// ── Characters ───────────────────────────────────────────────
+
+export const api = {
+  characters: {
+    list: (page = 1, limit = 20) =>
+      request<PaginatedResponse<CharacterListItem>>(
+        `/characters?page=${page}&limit=${limit}`,
+      ),
+
+    get: (id: string) =>
+      request<Person & { memory_bank: MemoryEntry[] }>(`/characters/${id}`),
+
+    create: (body: Omit<Person, 'id' | 'created_at' | 'updated_at'>) =>
+      request<Person>('/characters', { method: 'POST', body: JSON.stringify(body) }),
+
+    bulk: (count: number, archetype?: string) =>
+      request<{ created: number }>('/characters/bulk', {
+        method: 'POST',
+        body:   JSON.stringify({ count, ...(archetype ? { archetype } : {}) }),
+      }),
+
+    seed: () =>
+      request<{ seeded: boolean; count: number }>('/characters/seed'),
+
+    delete: (id: string) =>
+      request<void>(`/characters/${id}`, { method: 'DELETE' }),
+
+    applyDelta: (id: string, body: DeltaRequest) =>
+      request<MutationResult>(`/characters/${id}/delta`, {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+
+    addCriminalRecord: (id: string, body: CriminalRecordEntry) =>
+      request<MutationResult>(`/characters/${id}/criminal-record`, {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+
+    memory: (id: string, page = 1, limit = 50) =>
+      request<PaginatedResponse<MemoryEntry>>(
+        `/characters/${id}/memory?page=${page}&limit=${limit}`,
+      ),
+  },
+
+  rulesets: {
+    list: () =>
+      request<RulesetListItem[]>('/rulesets'),
+
+    active: () =>
+      request<RulesetRow>('/rulesets/active'),
+
+    get: (id: string) =>
+      request<RulesetRow>(`/rulesets/${id}`),
+
+    create: (body: { name: string; description?: string; rules: RulesetDef }) =>
+      request<RulesetRow>('/rulesets', { method: 'POST', body: JSON.stringify(body) }),
+
+    update: (id: string, body: { name?: string; description?: string; rules?: RulesetDef }) =>
+      request<RulesetRow>(`/rulesets/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+    activate: (id: string) =>
+      request<RulesetRow>(`/rulesets/${id}/activate`, { method: 'POST' }),
+
+    delete: (id: string) =>
+      request<void>(`/rulesets/${id}`, { method: 'DELETE' }),
+  },
+
+  interactions: {
+    tick: () =>
+      request<TickResult>('/interactions/tick', { method: 'POST' }),
+  },
+
+  economy: {
+    getState: () =>
+      request<EconomyState>('/economy'),
+
+    push: (direction: 'up' | 'down') =>
+      request<Pick<EconomyState, 'market_index' | 'market_trend' | 'market_volatility'>>(
+        '/economy/push', { method: 'POST', body: JSON.stringify({ direction }) },
+      ),
+
+    setVolatility: (volatility: number) =>
+      request<{ market_volatility: number }>(
+        '/economy/volatility', { method: 'PATCH', body: JSON.stringify({ volatility }) },
+      ),
+
+    setMultipliers: (multipliers: Record<string, number>) =>
+      request<{ global_trait_multipliers: Record<string, number> }>(
+        '/economy/multipliers', { method: 'PATCH', body: JSON.stringify({ multipliers }) },
+      ),
+
+    setGlobalTraits: (global_traits: Record<string, number>) =>
+      request<{ global_traits: Record<string, number> }>(
+        '/economy/global-traits', { method: 'PATCH', body: JSON.stringify({ global_traits }) },
+      ),
+  },
+
+  rip: {
+    list: (limit = 100) =>
+      request<DeceasedPerson[]>(`/rip?limit=${limit}`),
+  },
+
+  world: {
+    getState: () => request<WorldSnapshot>('/world'),
+  },
+
+  godMode: {
+    apply: (id: string, body: DeltaRequest) =>
+      request<MutationResult>(`/god-mode/${id}`, {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+  },
+
+  time: {
+    getState: () => request<WorldStateResponse>('/time'),
+
+    advance: (years: number) =>
+      request<AdvanceResult>('/time/advance', {
+        method: 'POST',
+        body:   JSON.stringify({ years }),
+      }),
+
+    rewind: (years: number) =>
+      request<RewindResult>('/time/rewind', {
+        method: 'POST',
+        body:   JSON.stringify({ years }),
+      }),
+
+    headlines: (params?: { type?: 'ANNUAL' | 'DECADE'; category?: string; yearFrom?: number; yearTo?: number }) => {
+      const q = new URLSearchParams();
+      if (params?.type)     q.set('type',     params.type);
+      if (params?.category) q.set('category', params.category);
+      if (params?.yearFrom) q.set('yearFrom', String(params.yearFrom));
+      if (params?.yearTo)   q.set('yearTo',   String(params.yearTo));
+      return request<Headline[]>(`/time/headlines?${q.toString()}`);
+    },
+
+    generateHeadlines: (year: number) =>
+      request<{ generated: number }>('/time/headlines/generate', {
+        method: 'POST',
+        body:   JSON.stringify({ year }),
+      }),
+  },
+};
+
+// ── World types ──────────────────────────────────────────────
+
+export interface WorldSnapshot {
+  current_year:             number;
+  tick_count:               number;
+  total_deaths:             number;
+  market_index:             number;
+  market_trend:             number;
+  market_volatility:        number;
+  population:               number;
+  avg_health:               number;
+  avg_happiness:            number;
+  avg_morality:             number;
+  avg_wealth:               number;
+  force_scores:             Record<string, number>;
+  global_traits:            Record<string, number>;
+  global_trait_multipliers: Record<string, number>;
+}
+
+// ── Time types ───────────────────────────────────────────────
+
+export interface Headline {
+  id:          string;
+  year:        number;
+  type:        'ANNUAL' | 'DECADE';
+  category:    string;
+  headline:    string;
+  story:       string;
+  person_name: string | null;
+  person_id:   string | null;
+  created_at:  string;
+}
+
+export interface WorldStateResponse {
+  id:               number;
+  current_year:     number;
+  updated_at:       string;
+  recent_headlines: Headline[];
+  decade_headlines: Headline[];
+}
+
+export interface AdvanceResult {
+  previous_year:       number;
+  current_year:        number;
+  deaths:              string[];
+  headlines_generated: number;
+}
+
+export interface RewindResult {
+  previous_year: number;
+  current_year:  number;
+  rewound_by:    number;
+}
+
+export interface RulesetListItem {
+  id:          string;
+  name:        string;
+  description: string | null;
+  is_active:   boolean;
+  created_at:  string;
+  updated_at:  string;
+}
+
+export interface RulesetRow extends RulesetListItem {
+  rules: RulesetDef;
+}

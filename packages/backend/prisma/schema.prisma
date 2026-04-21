@@ -1,0 +1,205 @@
+// ============================================================
+// PRISMA SCHEMA — Civilization Simulation
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --------------- Enums ---------------
+
+enum Sexuality {
+  HETEROSEXUAL
+  HOMOSEXUAL
+  BISEXUAL
+  ASEXUAL
+  PANSEXUAL
+  OTHER
+}
+
+enum EmotionalImpact {
+  traumatic
+  negative
+  neutral
+  positive
+  euphoric
+}
+
+enum HeadlineCategory {
+  MOST_DRAMATIC_FALL
+  MOST_INSPIRING_RISE
+  GREATEST_VILLAIN
+  MOST_TRAGIC
+  BEST_LOVE_STORY
+  MOST_CRIMINAL
+  RAGS_TO_RICHES
+  RICHES_TO_RAGS
+  MOST_INFLUENTIAL
+  LONGEST_SURVIVING
+}
+
+enum HeadlineType {
+  ANNUAL
+  DECADE
+}
+
+// --------------- Person ---------------
+
+model Person {
+  id   String @id @default(uuid()) @db.Uuid
+  name String
+
+  // ── Demographic ──────────────────────────────────────────
+  sexuality           Sexuality
+  gender              String
+  race                String
+  age                 Int
+  /// Expected maximum age in years
+  lifespan            Int       @default(80)
+
+  // ── Social ───────────────────────────────────────────────
+  relationship_status String
+  religion            String
+  /// JSONB array of CriminalRecord objects
+  criminal_record     Json      @default("[]")
+
+  // ── Stats 0-100 ──────────────────────────────────────────
+  health       Int @default(100) // 0-100
+  morality     Int @default(50)  // 0-100
+  happiness    Int @default(50)  // 0-100
+  reputation   Int @default(50)  // 0-100
+  influence    Int @default(0)   // 0-100
+  intelligence Int @default(50)  // 0-100
+
+  // ── Other ────────────────────────────────────────────────
+  physical_appearance String
+  /// Floating-point; no enforced upper bound
+  wealth              Float  @default(0.0)
+  /// JSONB map of all 100 survival/philosophy traits (0-100 each)
+  traits              Json   @default("{}")
+  /// JSONB map of personal global force scores e.g. { "war.morale": 45 }
+  global_scores       Json   @default("{}")
+
+  // ── Timestamps ───────────────────────────────────────────
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  // ── Relations ────────────────────────────────────────────
+  memory_bank MemoryBank[]
+
+  @@map("persons")
+}
+
+// --------------- Memory Bank ---------------
+
+model MemoryBank {
+  id String @id @default(uuid()) @db.Uuid
+
+  person    Person @relation(fields: [person_id], references: [id], onDelete: Cascade)
+  person_id String @db.Uuid
+
+  event_summary    String
+  emotional_impact EmotionalImpact
+
+  /// Snapshot of the PersonDelta that triggered this memory
+  delta_applied Json
+
+  timestamp  DateTime @default(now())
+  world_year Int?     // the world calendar year this memory occurred in
+
+  @@index([person_id])
+  @@index([timestamp])
+  @@index([world_year])
+  @@map("memory_bank")
+}
+
+// --------------- World State (singleton) ---------------
+
+model WorldState {
+  id           Int      @id @default(autoincrement())
+  current_year Int      @default(1)
+  updated_at   DateTime @updatedAt
+  /// Which 5 of the 25 trait categories are currently active (shown in UI, fed to Claude)
+  active_trait_categories Json @default("[]")
+  /// Flat map of all 24 global trait child values (e.g. "war.morale": 20)
+  global_traits           Json @default("{}")
+
+  // ── Tick engine ──────────────────────────────────────────────
+  /// Total ticks run (2 per year)
+  tick_count               Int   @default(0)
+  /// Cumulative death count across all ticks
+  total_deaths             Int   @default(0)
+
+  // ── Economy / stock market ───────────────────────────────────
+  /// Current market index value (starts at 100)
+  market_index             Float @default(100.0)
+  /// Per-tick upward drift rate (e.g. 0.015 = 1.5% per tick)
+  market_trend             Float @default(0.015)
+  /// Random noise amplitude per tick (e.g. 0.03 = ±3%)
+  market_volatility        Float @default(0.03)
+
+  // ── Global trait multipliers ─────────────────────────────────
+  /// Per-trait effect multipliers e.g. { "war": 1.5, "plague": 2.0 }
+  global_trait_multipliers Json  @default("{}")
+
+  @@map("world_state")
+}
+
+// --------------- Deceased Persons (RIP archive) ---------------
+
+model DeceasedPerson {
+  id                    String   @id @default(uuid()) @db.Uuid
+  name                  String
+  age_at_death          Int
+  world_year            Int
+  /// 'interaction' | 'old_age' | 'health'
+  cause                 String
+  final_health          Int
+  final_wealth          Float
+  final_happiness       Int
+  peak_positive_outcome String?
+  peak_negative_outcome String?
+  died_at               DateTime @default(now())
+
+  @@map("deceased_persons")
+}
+
+// --------------- Rulesets ---------------
+
+model Ruleset {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  is_active   Boolean  @default(false)
+  /// Full RulesetDef JSON — interaction types, outcome bands, weights
+  rules       Json
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  @@map("rulesets")
+}
+
+// --------------- Yearly Headlines ---------------
+
+model YearlyHeadline {
+  id          String           @id @default(uuid()) @db.Uuid
+  /// For ANNUAL: the specific year. For DECADE: the decade start (e.g. 840 for 840–849)
+  year        Int
+  type        HeadlineType     @default(ANNUAL)
+  category    HeadlineCategory
+  headline    String
+  story       String
+  person_id   String?          @db.Uuid
+  person_name String?
+  created_at  DateTime         @default(now())
+
+  @@unique([year, type, category])
+  @@index([year])
+  @@index([type])
+  @@map("yearly_headlines")
+}

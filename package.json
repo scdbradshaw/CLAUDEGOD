@@ -1,0 +1,17 @@
+{
+  "name": "civ-sim",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n backend,frontend -c cyan,magenta \"npm run dev --workspace=packages/backend\" \"npm run dev --workspace=packages/frontend\"",
+    "db:migrate": "npm run db:migrate --workspace=packages/backend",
+    "db:studio": "npm run db:studio --workspace=packages/backend",
+    "db:seed": "npm run db:seed --workspace=packages/backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}

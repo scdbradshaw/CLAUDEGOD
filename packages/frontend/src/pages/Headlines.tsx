@@ -1,0 +1,165 @@
+// ============================================================
+// HEADLINES PAGE
+// Chronicle archive — annual headlines (10yr) + decade summaries
+// ============================================================
+
+import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
+import { api, type Headline } from '../api/client';
+
+// ── Category metadata ──────────────────────────────────────────────────────
+
+const CATEGORY_META: Record<string, { label: string; color: string; icon: string }> = {
+  MOST_DRAMATIC_FALL:  { label: 'Greatest Fall',      color: 'text-red-400',    icon: '↘' },
+  MOST_INSPIRING_RISE: { label: 'Inspiring Rise',     color: 'text-emerald-400',icon: '↗' },
+  GREATEST_VILLAIN:    { label: 'Greatest Villain',   color: 'text-purple-400', icon: '☠' },
+  MOST_TRAGIC:         { label: 'Most Tragic',        color: 'text-blue-400',   icon: '✦' },
+  BEST_LOVE_STORY:     { label: 'Love Story',         color: 'text-pink-400',   icon: '♥' },
+  MOST_CRIMINAL:       { label: 'Most Criminal',      color: 'text-orange-400', icon: '⚖' },
+  RAGS_TO_RICHES:      { label: 'Rags to Riches',     color: 'text-yellow-400', icon: '◆' },
+  RICHES_TO_RAGS:      { label: 'Riches to Rags',     color: 'text-zinc-400',   icon: '◇' },
+  MOST_INFLUENTIAL:    { label: 'Most Influential',   color: 'text-cyan-400',   icon: '★' },
+  LONGEST_SURVIVING:   { label: 'Longest Surviving',  color: 'text-lime-400',   icon: '⌛' },
+};
+
+// ── HeadlineCard ───────────────────────────────────────────────────────────
+
+function HeadlineCard({ h }: { h: Headline }) {
+  const [expanded, setExpanded] = useState(false);
+  const meta = CATEGORY_META[h.category] ?? { label: h.category, color: 'text-zinc-400', icon: '◉' };
+
+  return (
+    <div
+      className="panel cursor-pointer hover:border-zinc-600 transition-colors"
+      onClick={() => setExpanded(x => !x)}
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className={`text-lg shrink-0 ${meta.color}`}>{meta.icon}</span>
+          <div className="min-w-0">
+            <p className={`text-[10px] uppercase tracking-widest ${meta.color} mb-0.5`}>{meta.label}</p>
+            <p className="text-sm font-semibold text-white leading-snug">{h.headline}</p>
+            {h.person_name && (
+              <p className="text-xs text-zinc-500 mt-0.5">
+                {h.person_id
+                  ? <Link to={`/characters/${h.person_id}`} onClick={e => e.stopPropagation()} className="hover:text-amber-400 transition-colors">{h.person_name}</Link>
+                  : h.person_name
+                }
+              </p>
+            )}
+          </div>
+        </div>
+        <span className="text-zinc-600 text-xs shrink-0">{expanded ? '▲' : '▼'}</span>
+      </div>
+
+      {expanded && (
+        <p className="text-xs text-zinc-400 leading-relaxed mt-3 border-t border-zinc-700 pt-3">
+          {h.story}
+        </p>
+      )}
+    </div>
+  );
+}
+
+// ── Main page ──────────────────────────────────────────────────────────────
+
+export default function Headlines() {
+  const [view, setView] = useState<'ANNUAL' | 'DECADE'>('ANNUAL');
+  const [filterCat, setFilterCat] = useState<string>('');
+
+  const { data: timeState } = useQuery({
+    queryKey: ['time'],
+    queryFn:  api.time.getState,
+  });
+
+  const { data: headlines = [], isLoading } = useQuery({
+    queryKey: ['headlines', view, filterCat],
+    queryFn:  () => api.time.headlines({
+      type:     view,
+      category: filterCat || undefined,
+    }),
+    enabled: !!timeState,
+  });
+
+  // Group annual by year, decade by decade
+  const grouped = headlines.reduce<Record<number, Headline[]>>((acc, h) => {
+    if (!acc[h.year]) acc[h.year] = [];
+    acc[h.year].push(h);
+    return acc;
+  }, {});
+
+  const sortedYears = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+
+  return (
+    <div className="min-h-screen p-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">← The Realm</Link>
+          <h1 className="text-2xl font-bold text-white mt-1">The Chronicle</h1>
+          <p className="text-sm text-zinc-500">
+            {view === 'ANNUAL' ? 'Annual headlines — last 10 years' : 'Decade summaries — distant history'}
+          </p>
+        </div>
+        <span className="text-3xl font-bold text-amber-400">
+          Year {timeState?.current_year ?? '…'}
+        </span>
+      </div>
+
+      {/* Controls */}
+      <div className="flex flex-wrap gap-3 items-center">
+        {/* Annual / Decade toggle */}
+        <div className="flex rounded-lg overflow-hidden border border-zinc-700">
+          {(['ANNUAL', 'DECADE'] as const).map(t => (
+            <button
+              key={t}
+              onClick={() => setView(t)}
+              className={`px-4 py-1.5 text-xs font-medium transition-colors ${
+                view === t ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+              }`}
+            >
+              {t === 'ANNUAL' ? 'Annual' : 'Decades'}
+            </button>
+          ))}
+        </div>
+
+        {/* Category filter */}
+        <select
+          value={filterCat}
+          onChange={e => setFilterCat(e.target.value)}
+          className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-amber-500"
+        >
+          <option value="">All Categories</option>
+          {Object.entries(CATEGORY_META).map(([k, v]) => (
+            <option key={k} value={k}>{v.icon} {v.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Content */}
+      {isLoading ? (
+        <p className="text-zinc-500 text-sm animate-pulse">Consulting the archives…</p>
+      ) : sortedYears.length === 0 ? (
+        <div className="panel text-center py-12">
+          <p className="text-zinc-500">No chronicles yet. Advance time to generate headlines.</p>
+        </div>
+      ) : (
+        <div className="space-y-8">
+          {sortedYears.map(year => (
+            <section key={year}>
+              <h2 className="text-xs uppercase tracking-widest text-zinc-500 mb-3 flex items-center gap-2">
+                <span className="h-px flex-1 bg-zinc-800" />
+                {view === 'DECADE' ? `${year}s — Decade of ${year}` : `Year ${year}`}
+                <span className="h-px flex-1 bg-zinc-800" />
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {grouped[year].map(h => <HeadlineCard key={h.id} h={h} />)}
+              </div>
+            </section>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -135,6 +135,9 @@ function GenerateHeadlineForm({ view, currentYear }: { view: 'ANNUAL' | 'DECADE'
 export default function Headlines() {
   const [view, setView] = useState<'ANNUAL' | 'DECADE'>('ANNUAL');
   const [filterCat, setFilterCat] = useState<string>('');
+  // Round 7 — collapsed state per year key. Most-recent year starts expanded
+  // (see `expandedByDefault` below); everything else collapses until clicked.
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
 
   const { data: timeState } = useQuery({
     queryKey: ['time'],
@@ -219,18 +222,42 @@ export default function Headlines() {
         </div>
       ) : (
         <div className="space-y-8">
-          {sortedYears.map(year => (
-            <section key={year}>
-              <h2 className="text-xs uppercase tracking-widest text-zinc-500 mb-3 flex items-center gap-2">
-                <span className="h-px flex-1 bg-zinc-800" />
-                {view === 'DECADE' ? `${year}s — Decade of ${year}` : `Year ${year}`}
-                <span className="h-px flex-1 bg-zinc-800" />
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                {grouped[year].map(h => <HeadlineCard key={h.id} h={h} />)}
-              </div>
-            </section>
-          ))}
+          {sortedYears.map((year, idx) => {
+            // Default: first (most recent) section expanded; older sections
+            // collapsed. `collapsed` stores years whose state diverges from
+            // the default, so open = defaultOpen XOR collapsed.has(year).
+            const defaultOpen = idx === 0;
+            const open = defaultOpen !== collapsed.has(year);
+            const toggle = () => setCollapsed(prev => {
+              const next = new Set(prev);
+              if (next.has(year)) next.delete(year);
+              else next.add(year);
+              return next;
+            });
+            return (
+              <section key={year}>
+                <button
+                  type="button"
+                  onClick={toggle}
+                  className="w-full text-xs uppercase tracking-widest text-zinc-500 hover:text-zinc-300 mb-3 flex items-center gap-2 transition-colors"
+                >
+                  <span className="h-px flex-1 bg-zinc-800" />
+                  <span className="flex items-center gap-2">
+                    {view === 'DECADE' ? `${year}s — Decade of ${year}` : `Year ${year}`}
+                    <span className="text-zinc-600">·</span>
+                    <span className="text-zinc-600">{grouped[year].length}</span>
+                    <span className="text-zinc-600">{open ? '▾' : '▸'}</span>
+                  </span>
+                  <span className="h-px flex-1 bg-zinc-800" />
+                </button>
+                {open && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                    {grouped[year].map(h => <HeadlineCard key={h.id} h={h} />)}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       )}
     </div>

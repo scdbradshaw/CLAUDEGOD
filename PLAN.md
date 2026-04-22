@@ -146,16 +146,22 @@ Scope:
 
 ---
 
-## Round 7 — UX polish
+## Round 7 — UX polish ✅
 
 **Goal:** close the loop on the major pages.
 
 Scope:
-- Filter-first People page (per DESIGN §14): search, filter by trait ranges,
-  sort by composite signals.
-- Chronicle: collapsible year cards, decade summaries pinned.
-- Character Detail: memory bank rendered with per-memory tone styling.
-- RIP Archive: cause-of-death filter, peak-outcome callouts.
+- People: filter-first layout already in place (search, race/religion/faction
+  chips, status, age range, sort by updated_at/name/age/health/wealth).
+- RIP Archive: cause-of-death filter + peak positive/negative outcome
+  callouts already present on every card.
+- Chronicle: year sections are now collapsible. The most recent year
+  auto-expands; older years collapse until clicked, keeping the first
+  screenfull focused on current events. Per-year headline counts are shown
+  inline on the header row.
+- Memory bank: `MemoryEntry.tone` added to the shared type; the panel now
+  renders a tone pill next to the impact label using the same palette as
+  the Chronicle's `TonePill`, so voice reads consistently across surfaces.
 
 ---
 

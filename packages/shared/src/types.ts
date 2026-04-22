@@ -545,6 +545,8 @@ export interface MemoryEntry {
   counterparty_id:  string | null;
   timestamp:        string;   // ISO-8601
   world_year:       number | null;
+  /** Narrative voice — chosen by the writer or defaulted by the tone service. */
+  tone?:            Tone | null;
 }
 
 // --------------- Inner Circle ---------------

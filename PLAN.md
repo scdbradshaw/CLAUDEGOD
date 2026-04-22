@@ -96,17 +96,33 @@ Scope:
 
 ---
 
-## Round 5 — Engine atomization
+## Round 5 — Engine atomization ✅
 
 **Goal:** split the monolithic tick into named, individually-testable phases so
 we can profile, skip, or reorder without surgery.
 
 Scope:
-- Break `advanceTime` into ordered phases: `applyDrifts → resolveInteractions →
-  runAgenticTurn → processBirths → processDeaths → updateMarket →
-  generateHeadlines → ensureDecadeSummaries`.
-- Each phase is a function with a typed `TickContext` in / `TickContext` out.
-- Per-phase timing logged behind a debug flag.
+- New `packages/backend/src/tick/` directory houses the phase modules:
+  - `timing.ts` — `withTiming(timings, label, fn)` wraps any phase and records
+    duration into a `PhaseTimings` map; logs to stderr + attaches to the tick
+    response only when `DEBUG_TICK_TIMING=1`.
+  - `scoring.ts` — pure helpers hoisted from the route handler: `computeScore`,
+    `findBand`, `getEffects`, `applyEffectPacket`, `pickInteractionType`,
+    `computeGrudgeBonus`, `emotionalImpactForMagnitude`, `invertImpact`,
+    plus `MAX_GRUDGE_BONUS` / `GRUDGE_MEMORY_LIMIT` constants. Shared by the
+    tick protagonist loop and the `/api/interactions/force` route.
+  - `resolve-interactions.ts` — exports `resolveInteractionsPhase()`, the
+    per-protagonist loop (antagonist pick → grudge+trauma scoring → effect
+    packets → memory intents → viral joins → spawn intents → conception
+    intents). Pure computation, no DB writes — returns accumulator maps for
+    the persistence phase to flush.
+- `/api/interactions/tick` route now delegates step 3 to
+  `resolveInteractionsPhase` and wraps each numbered step in `withTiming`
+  (`resolveInteractions`, `applyDrifts`, `persistInteractions`,
+  `processInteractionDeaths`, `runAgenticTurn`, `processBirths`,
+  `updateMarket`). Response includes `timings_ms` when the debug flag is set.
+- `/api/interactions/force` updated to import the hoisted helpers and pass
+  `prisma` to the new `computeGrudgeBonus` signature.
 
 ---
 

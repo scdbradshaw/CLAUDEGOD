@@ -3,7 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
-import { Prisma, Tone } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import { toneForOutcomeBand } from '../services/tone.service';
 import {
@@ -14,11 +14,20 @@ import {
   TRAUMA_ANNUAL_DECAY,
   type GlobalTraitSet,
   type RulesetDef,
-  type InteractionTypeDef,
-  type OutcomeBand,
-  type EffectPacket,
   type TraitSet,
 } from '@civ-sim/shared';
+import {
+  computeScore,
+  findBand,
+  getEffects,
+  applyEffectPacket,
+  emotionalImpactForMagnitude,
+  invertImpact,
+  computeGrudgeBonus,
+  randFloat,
+} from '../tick/scoring';
+import { resolveInteractionsPhase } from '../tick/resolve-interactions';
+import { withTiming, timingsEnabled, type PhaseTimings } from '../tick/timing';
 import { processBirths, type BirthEvent } from '../services/births.service';
 import { getActiveWorld } from '../services/time.service';
 import {
@@ -73,139 +82,11 @@ const router = Router();
 // ── Tick lock (Node is single-threaded, this is safe) ───────
 let tickRunning = false;
 
-// Phase 1 tunables ────────────────────────────────────────────
-/** Antagonizer hybrid weight — 60% inner-circle picks, 40% random wild card. */
-const CONNECTION_PICK_PROB = 0.60;
-
 // Market tunables ─────────────────────────────────────────────
 const MARKET_CEILING       = 10.0;
 const MARKET_FLOOR         = 0.1;
 /** Fraction of the distance from current index to 1.0 pulled back each tick. */
 const MARKET_MEAN_REVERSION = 0.005;
-/** Cap on grudge-weighted score adjustment from accumulated memories
- *  between subject ↔ antagonist. Keeps one bad day from poisoning forever. */
-const MAX_GRUDGE_BONUS = 80;
-/** Relationship-memory lookback limit per subject-counterparty pair. */
-const GRUDGE_MEMORY_LIMIT = 8;
-
-// ── Pure helpers ─────────────────────────────────────────────
-
-function randInt(min: number, max: number): number {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function randFloat(min: number, max: number): number {
-  return Math.random() * (max - min) + min;
-}
-
-function pickInteractionType(types: InteractionTypeDef[]): InteractionTypeDef {
-  const total = types.reduce((s, t) => s + t.weight, 0);
-  let roll = Math.random() * total;
-  for (const t of types) {
-    roll -= t.weight;
-    if (roll <= 0) return t;
-  }
-  return types[types.length - 1];
-}
-
-/**
- * Core scoring function — fully data-driven.
- *  - Global amplifiers: each `force.child` value times its multiplier (scaled by force mult).
- *  - Trait weights: each identity attribute contribution from the protagonist.
- *    Unknown keys are silently skipped so old/mismatched rulesets don't crash.
- *  - Grudge bonus: aggregate memory weight between subject and antagonist,
- *    clamped to ±MAX_GRUDGE_BONUS. Positive memory → help, negative → harm.
- */
-function computeScore(
-  type: InteractionTypeDef,
-  protagonistTraits: TraitSet,
-  globalTraits: GlobalTraitSet,
-  multipliers: Record<string, number>,
-  grudgeBonus: number,
-): number {
-  let score = 0;
-
-  for (const amp of type.global_amplifiers) {
-    const forceKey = amp.key.split('.')[0];
-    const raw      = globalTraits[amp.key] ?? 0;
-    const mult     = multipliers[forceKey] ?? 1.0;
-    score += raw * amp.multiplier * mult;
-  }
-
-  for (const tw of type.trait_weights) {
-    const val = protagonistTraits[tw.trait];
-    if (val === undefined) continue; // silently skip unknown traits
-    score += val * tw.sign * (tw.multiplier ?? 1);
-  }
-
-  score += grudgeBonus;
-
-  return Math.round(score);
-}
-
-function findBand(score: number, bands: OutcomeBand[]): OutcomeBand {
-  for (const band of bands) {
-    if (score >= band.min_score) return band;
-  }
-  return bands[bands.length - 1];
-}
-
-/**
- * Resolve a band's subject/antagonist effect packets.
- * Legacy v2 rulesets (single stat_delta/affects_stats) are upgraded on the
- * fly — subject gets the packet as-is, antagonist gets the inverse — so
- * old rulesets loaded from the DB still work.
- */
-function getEffects(band: OutcomeBand): {
-  subject:    EffectPacket;
-  antagonist: EffectPacket;
-} {
-  if (band.subject_effect) {
-    const subject = band.subject_effect;
-    const antagonist = band.antagonist_effect ?? {
-      stat_delta:    [-subject.stat_delta[1], -subject.stat_delta[0]],
-      affects_stats: subject.affects_stats,
-    };
-    return { subject, antagonist };
-  }
-  // Legacy shape
-  const statDelta    = band.stat_delta    ?? [0, 0];
-  const affectsStats = band.affects_stats ?? [];
-  return {
-    subject:    { stat_delta: statDelta, affects_stats: affectsStats },
-    antagonist: {
-      stat_delta:    [-statDelta[1], -statDelta[0]],
-      affects_stats: affectsStats,
-    },
-  };
-}
-
-/**
- * Apply one EffectPacket to the unified trait delta accumulator.
- * Both `affects_stats` keys and `trait_deltas` keys target the `traits` JSONB —
- * the distinction is how the magnitude is rolled (shared vs per-key).
- * `health` is special: it's also a column, but the bulk-update SQL syncs it.
- * Unknown keys are silently skipped at persist time.
- */
-function applyEffectPacket(
-  traitAcc: Record<string, Record<string, number>>,
-  personId: string,
-  packet:   EffectPacket,
-) {
-  if (packet.affects_stats.length > 0) {
-    const mag = randInt(packet.stat_delta[0], packet.stat_delta[1]);
-    traitAcc[personId] ??= {};
-    for (const key of packet.affects_stats) {
-      traitAcc[personId][key] = (traitAcc[personId][key] ?? 0) + mag;
-    }
-  }
-  if (packet.trait_deltas) {
-    traitAcc[personId] ??= {};
-    for (const [key, d] of Object.entries(packet.trait_deltas)) {
-      traitAcc[personId][key] = (traitAcc[personId][key] ?? 0) + d;
-    }
-  }
-}
 
 /** Data-driven passive drifts — computed from ruleset.passive_drifts.
  *  Missing global trait keys fall back to 0. */
@@ -224,7 +105,7 @@ function computePassiveDrifts(
   return drifts;
 }
 
-// ── Antagonizer picker (60/40 hybrid) ────────────────────────
+// ── Person row shape for tick + /force ──────────────────────
 
 type LivingPerson = {
   id:    string;
@@ -242,43 +123,6 @@ type LivingPerson = {
   criminal_record:     Prisma.JsonValue;
 };
 
-/**
- * Pick an antagonizer for the subject.
- *   - 60%: weighted draw from subject's inner-circle links by bond_strength
- *   - 40%: uniform random living person (wild card)
- * Falls back to random when the subject has no links.
- */
-function pickAntagonizer(
-  subject:   LivingPerson,
-  allLiving: LivingPerson[],
-  byId:      Map<string, LivingPerson>,
-  linksOf:   Map<string, OwnedEdge[]>,
-): LivingPerson | null {
-  const pool = allLiving.filter(p => p.id !== subject.id);
-  if (pool.length === 0) return null;
-
-  const useConnection = Math.random() < CONNECTION_PICK_PROB;
-  const links = linksOf.get(subject.id);
-
-  if (useConnection && links && links.length > 0) {
-    // Only count links whose target is still alive
-    const alive = links.filter(l => byId.has(l.target_id));
-    if (alive.length > 0) {
-      const totalWeight = alive.reduce((s, l) => s + Math.max(1, l.bond_strength), 0);
-      let roll = Math.random() * totalWeight;
-      for (const l of alive) {
-        roll -= Math.max(1, l.bond_strength);
-        if (roll <= 0) {
-          const picked = byId.get(l.target_id);
-          if (picked) return picked;
-        }
-      }
-    }
-  }
-  // Wild-card path
-  return pool[Math.floor(Math.random() * pool.length)];
-}
-
 // ── POST /api/interactions/tick ──────────────────────────────
 
 router.post('/tick', async (_req: Request, res: Response) => {
@@ -287,6 +131,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
     return;
   }
   tickRunning = true;
+
+  const timings: PhaseTimings = {};
 
   try {
     // 1. World state + ruleset
@@ -356,143 +202,42 @@ router.post('/tick', async (_req: Request, res: Response) => {
       });
     }
 
-    // 3. Run interactions — each person is protagonist once, picks via 60/40 hybrid.
-    // All deltas (affects_stats + trait_deltas) go into a single traitDeltas map.
-    // The bulk-update SQL merges these into the traits JSONB and syncs the health column.
-    const traitDeltas: Record<string, Record<string, number>> = {};
-    const topScores:   Record<string, { protagonist_name: string; score: number; outcome: string }> = {};
-    type PendingMemory = {
-      person_id:       string;
-      event_summary:   string;
-      emotional_impact: 'traumatic' | 'negative' | 'neutral' | 'positive' | 'euphoric';
-      magnitude:       number;
-      counterparty_id: string | null;
-      tone:            Tone;
-      /// Subject's age at the moment of the event — drives decade_of_life
-      /// at write time so compressLifeDecade() can slice raw rows without
-      /// looking up the person's birth year.
-      age_at_event:    number;
-    };
-    const pendingMemories: PendingMemory[] = [];
-
-    // Viral-join accumulator — keyed by `${groupId}:${personId}` so that
-    // duplicate matches during the same tick collapse to a single insert.
-    const pendingJoinsByKey = new Map<string, JoinCandidate>();
-
-    // Group-formation intents — one per founder per tick (emergent or event).
-    const pendingSpawnsByFounder = new Map<string, SpawnIntent>();
-
-    // Pregnancy intents from `creates_pregnancy` outcome bands. Deduped by
-    // unordered pair so the same two people can't queue multiple conceptions
-    // in a single tick; the in-transaction writer further guards against
-    // either participant already carrying an unresolved pregnancy.
-    const pendingPregnanciesByPair = new Map<string, { parent_a_id: string; parent_b_id: string }>();
-
-    const shuffled = [...living].sort(() => Math.random() - 0.5);
-
-    for (const protagonist of shuffled) {
-      const antagonist = pickAntagonizer(protagonist, living, byId, linksOf);
-      if (!antagonist) continue;
-
-      const iType = pickInteractionType(rules.interaction_types);
-      const protagTraits = (protagonist.traits ?? {}) as TraitSet;
-
-      // 3a. Grudge / loyalty weighting — recent memories between these two
-      const grudgeBonus = await computeGrudgeBonus(protagonist.id, antagonist.id);
-
-      const traumaPenalty = Math.round(protagonist.trauma_score * TRAUMA_SCORE_PENALTY);
-      const score = computeScore(iType, protagTraits, globalTraits, traitMults, grudgeBonus) - traumaPenalty;
-      const band  = findBand(score, rules.outcome_bands);
-
-      if (!topScores[iType.id] || score > topScores[iType.id].score) {
-        topScores[iType.id] = {
-          protagonist_name: protagonist.name,
-          score,
-          outcome: band.label,
-        };
-      }
-
-      // Asymmetric outcomes — subject packet + antagonist packet
-      const { subject, antagonist: antaPacket } = getEffects(band);
-      applyEffectPacket(traitDeltas, protagonist.id, subject);
-      applyEffectPacket(traitDeltas, antagonist.id,  antaPacket);
-
-      // Queue memory if the band says so
-      if (band.creates_memory) {
-        const magnitude = band.magnitude ?? 0.5;
-        const emotional = emotionalImpactForMagnitude(score, magnitude);
-        const tone      = toneForOutcomeBand(band, iType);
-        const summary   = `${iType.label} with ${antagonist.name} — ${band.label} (${score})`;
-        pendingMemories.push({
-          person_id:       protagonist.id,
-          event_summary:   summary,
-          emotional_impact: emotional,
-          magnitude,
-          counterparty_id: antagonist.id,
-          tone,
-          age_at_event:    protagonist.age,
-        });
-        // Antagonist also remembers (mirrored valence)
-        pendingMemories.push({
-          person_id:       antagonist.id,
-          event_summary:   `${iType.label} with ${protagonist.name} — ${band.label} (${score})`,
-          emotional_impact: invertImpact(emotional),
-          magnitude,
-          counterparty_id: protagonist.id,
-          tone,
-          age_at_event:    antagonist.age,
-        });
-      }
-
-      // 3b. Viral membership transmission — run in both directions so a
-      // carrier can infect either role. Pending joins are deduped by key
-      // so repeated matches in the same tick don't spawn duplicate rows.
-      const protoSnap = personSnaps.get(protagonist.id);
-      const antaSnap  = personSnaps.get(antagonist.id);
-      if (protoSnap && antaSnap) {
-        const candidates = [
-          ...viralJoinsForPair(protoSnap, antaSnap, groups, memberships),
-          ...viralJoinsForPair(antaSnap, protoSnap, groups, memberships),
-        ];
-        for (const c of candidates) {
-          const key = `${c.groupId}:${c.subject.id}`;
-          const prev = pendingJoinsByKey.get(key);
-          if (!prev || c.alignment > prev.alignment) {
-            pendingJoinsByKey.set(key, c);
-          }
-        }
-
-        // 3c. Group formation — event-driven always wins over emergent.
-        // One spawn intent per founder per tick (most recent wins if we
-        // end up with both — rare in practice).
-        const eventSpawn = tryEventSpawn(protoSnap, antaSnap, band);
-        const spawn = eventSpawn ?? tryEmergentSpawn(protoSnap, band);
-        if (spawn) pendingSpawnsByFounder.set(spawn.founderId, spawn);
-
-        // 3d. Conception — bands flagged `creates_pregnancy` queue a
-        // Pregnancy row between protagonist and antagonist, but only when the
-        // interaction type itself opts in via `can_conceive`. The type gate
-        // lets the same band be reused across unrelated interactions (e.g. a
-        // `legendary` outcome on a conflict) without unintended births.
-        // Ordering within the pair key is stable so the dedupe doesn't depend
-        // on who was rolled as protagonist this tick.
-        if (band.creates_pregnancy && iType.can_conceive) {
-          const [a, b] = protagonist.id < antagonist.id
-            ? [protagonist.id, antagonist.id]
-            : [antagonist.id,  protagonist.id];
-          pendingPregnanciesByPair.set(`${a}:${b}`, { parent_a_id: a, parent_b_id: b });
-        }
-      }
-    }
+    // 3. Run interactions — delegated to the Round 5 phase module. Returns
+    //    accumulator maps only; no DB writes happen until the txn below.
+    const phaseResult = await withTiming(timings, 'resolveInteractions', () =>
+      resolveInteractionsPhase({
+        prisma,
+        rules,
+        living,
+        byId,
+        linksOf,
+        personSnaps,
+        groups,
+        memberships,
+        globalTraits,
+        traitMults,
+      }),
+    );
+    const {
+      traitDeltas,
+      topScores,
+      pendingMemories,
+      pendingJoinsByKey,
+      pendingSpawnsByFounder,
+      pendingPregnanciesByPair,
+      interactionsProcessed,
+    } = phaseResult;
 
     // 4. Passive drifts (data-driven from ruleset, applied to everyone)
-    const drifts = computePassiveDrifts(rules, globalTraits);
-    for (const p of living) {
-      traitDeltas[p.id] ??= {};
-      for (const [key, d] of Object.entries(drifts)) {
-        traitDeltas[p.id][key] = (traitDeltas[p.id][key] ?? 0) + d;
+    await withTiming(timings, 'applyDrifts', () => {
+      const drifts = computePassiveDrifts(rules, globalTraits);
+      for (const p of living) {
+        traitDeltas[p.id] ??= {};
+        for (const [key, d] of Object.entries(drifts)) {
+          traitDeltas[p.id][key] = (traitDeltas[p.id][key] ?? 0) + d;
+        }
       }
-    }
+    });
 
     // 5. Apply all trait deltas — single bulk UPDATE per tick.
     //    Every row: { id, traits: {merged}, health?: number (if traits.health changed) }
@@ -529,7 +274,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
       }
     }
 
-    await prisma.$transaction(async (tx) => {
+    await withTiming(timings, 'persistInteractions', () => prisma.$transaction(async (tx) => {
       if (bulkUpdates.length > 0) {
         // One round-trip regardless of N. Merges traits JSONB and optionally syncs health column.
         await tx.$executeRaw`
@@ -642,7 +387,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
           },
         });
       }
-    });
+    }));
 
     // 6. Process interaction deaths — each death runs religion-dissolve
     //    BEFORE the person is deleted so we can still write faith-lost
@@ -655,6 +400,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
     const factionSuccessions:  SuccessionResult[]       = [];
     const inheritances: InheritanceResult[] = [];
 
+    await withTiming(timings, 'processInteractionDeaths', async () => {
     for (const p of living) {
       if (finalHealth[p.id] <= 0) {
         await prisma.$transaction(async (tx) => {
@@ -683,6 +429,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
         deathsThisTick++;
       }
     }
+    });
 
     // 7. Age every 2nd tick
     const newTickCount = world.tick_count + 1;
@@ -807,12 +554,14 @@ router.post('/tick', async (_req: Request, res: Response) => {
         agentLinksOf.set(l.owner_id, arr);
       }
 
-      const agenticResult = await prisma.$transaction(async (tx) =>
-        runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, world.id, {
-          startedTick:            newTickCount,
-          pregnancyDurationTicks: PREGNANCY_DURATION_TICKS,
-          conceive:               rules.capability_gates?.agentic_conceive,
-        }),
+      const agenticResult = await withTiming(timings, 'runAgenticTurn', () =>
+        prisma.$transaction(async (tx) =>
+          runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, world.id, {
+            startedTick:            newTickCount,
+            pregnancyDurationTicks: PREGNANCY_DURATION_TICKS,
+            conceive:               rules.capability_gates?.agentic_conceive,
+          }),
+        ),
       );
       agenticActions = agenticResult.actions;
       religionDissolves.push(...agenticResult.religion_dissolves);
@@ -843,29 +592,34 @@ router.post('/tick', async (_req: Request, res: Response) => {
     //    replaces the legacy "12 births per 10 deaths" population-upkeep
     //    loop with the interaction-driven model described in DESIGN §9.
     const newTotalDeaths = oldTotalDeaths + deathsThisTick;
-    const birthEvents: BirthEvent[] = await processBirths(
-      world.id,
-      newTickCount,
-      newYear,
-      globalTraits as Record<string, number>,
+    const birthEvents: BirthEvent[] = await withTiming(timings, 'processBirths', () =>
+      processBirths(
+        world.id,
+        newTickCount,
+        newYear,
+        globalTraits as Record<string, number>,
+      ),
     );
     const birthsThisTick = birthEvents.length;
 
     // 9. Market engine — drift + mean-reversion + ceiling/floor
-    const noise             = randFloat(-world.market_volatility, world.market_volatility);
-    const meanReversionPull = (1.0 - world.market_index) * MARKET_MEAN_REVERSION;
-    const marketReturn      = world.market_trend + noise + meanReversionPull;
-    const rawMarketIdx      = world.market_index * (1 + marketReturn);
-    const newMarketIdx      = Math.min(MARKET_CEILING, Math.max(MARKET_FLOOR, rawMarketIdx));
+    const { newMarketIdx, marketReturn } = await withTiming(timings, 'updateMarket', async () => {
+      const noise             = randFloat(-world.market_volatility, world.market_volatility);
+      const meanReversionPull = (1.0 - world.market_index) * MARKET_MEAN_REVERSION;
+      const marketReturn      = world.market_trend + noise + meanReversionPull;
+      const rawMarketIdx      = world.market_index * (1 + marketReturn);
+      const newMarketIdx      = Math.min(MARKET_CEILING, Math.max(MARKET_FLOOR, rawMarketIdx));
 
-    // Wealth drift proportional to market return
-    if (Math.abs(marketReturn) > 0.0005) {
-      const multiplier = 1 + marketReturn;
-      await prisma.$executeRaw`
-        UPDATE persons SET wealth = wealth * ${multiplier}, updated_at = NOW()
-        WHERE world_id = ${world.id}::uuid AND health > 0 AND wealth > 0
-      `;
-    }
+      // Wealth drift proportional to market return
+      if (Math.abs(marketReturn) > 0.0005) {
+        const multiplier = 1 + marketReturn;
+        await prisma.$executeRaw`
+          UPDATE persons SET wealth = wealth * ${multiplier}, updated_at = NOW()
+          WHERE world_id = ${world.id}::uuid AND health > 0 AND wealth > 0
+        `;
+      }
+      return { newMarketIdx, marketReturn };
+    });
 
     // 10. Persist world state
     await prisma.world.update({
@@ -881,7 +635,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
     res.json({
       tick_number:            newTickCount,
       world_year:             newYear,
-      interactions_processed: shuffled.length,
+      interactions_processed: interactionsProcessed,
       deaths_this_tick:       deathsThisTick,
       births_this_tick:       birthsThisTick,
       births:                 birthEvents,
@@ -943,72 +697,14 @@ router.post('/tick', async (_req: Request, res: Response) => {
         religion_name: c.religion_name,
         alignment:     c.alignment,
       })),
+      // Round 5 — per-phase timings, only emitted when DEBUG_TICK_TIMING=1
+      ...(timingsEnabled() ? { timings_ms: timings } : {}),
     });
 
   } finally {
     tickRunning = false;
   }
 });
-
-// ── Grudge / loyalty weighting ──────────────────────────────
-//
-// Looks up the most recent memories between `personId` and `counterpartyId`
-// and returns a signed bonus in the score space. Positive emotional impact
-// bank memories boost the score; negative memories drag it down. Magnitude
-// scales each memory's contribution so trauma weighs more than minor events.
-
-const IMPACT_VALENCE: Record<string, number> = {
-  traumatic:  -2,
-  negative:   -1,
-  neutral:     0,
-  positive:    1,
-  euphoric:    2,
-};
-
-async function computeGrudgeBonus(
-  personId:         string,
-  counterpartyId:   string,
-): Promise<number> {
-  const memories = await prisma.memoryBank.findMany({
-    where: { person_id: personId, counterparty_id: counterpartyId },
-    orderBy: { timestamp: 'desc' },
-    take: GRUDGE_MEMORY_LIMIT,
-    select: { emotional_impact: true, magnitude: true },
-  });
-  if (memories.length === 0) return 0;
-  let total = 0;
-  for (const m of memories) {
-    const valence = IMPACT_VALENCE[m.emotional_impact] ?? 0;
-    total += valence * m.magnitude * 25; // ~25 per extreme memory
-  }
-  return Math.max(-MAX_GRUDGE_BONUS, Math.min(MAX_GRUDGE_BONUS, total));
-}
-
-function emotionalImpactForMagnitude(
-  score:     number,
-  magnitude: number,
-): 'traumatic' | 'negative' | 'neutral' | 'positive' | 'euphoric' {
-  if (score >= 0) {
-    if (magnitude >= 0.9) return 'euphoric';
-    if (magnitude >= 0.4) return 'positive';
-    return 'neutral';
-  }
-  if (magnitude >= 0.9) return 'traumatic';
-  if (magnitude >= 0.4) return 'negative';
-  return 'neutral';
-}
-
-function invertImpact(
-  impact: 'traumatic' | 'negative' | 'neutral' | 'positive' | 'euphoric',
-): 'traumatic' | 'negative' | 'neutral' | 'positive' | 'euphoric' {
-  switch (impact) {
-    case 'euphoric':  return 'traumatic';
-    case 'positive':  return 'negative';
-    case 'negative':  return 'positive';
-    case 'traumatic': return 'euphoric';
-    default:          return 'neutral';
-  }
-}
 
 // ── POST /api/interactions/force ────────────────────────────
 //
@@ -1075,7 +771,7 @@ router.post('/force', async (req: Request, res: Response) => {
     : DEFAULT_GLOBAL_TRAIT_MULTIPLIERS;
 
   // Score
-  const grudgeBonus   = await computeGrudgeBonus(subject.id, antagonist.id);
+  const grudgeBonus   = await computeGrudgeBonus(prisma, subject.id, antagonist.id);
   const subjectTraits = (subject.traits ?? {}) as TraitSet;
   const traumaPenalty = Math.round((subject.trauma_score ?? 0) * TRAUMA_SCORE_PENALTY);
   const score         = computeScore(iType, subjectTraits, globalTraits, traitMults, grudgeBonus) - traumaPenalty;

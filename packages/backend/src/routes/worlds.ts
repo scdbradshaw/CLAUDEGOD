@@ -3,12 +3,14 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../db/client';
 import {
   DEFAULT_GLOBAL_TRAITS,
   DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
 } from '@civ-sim/shared';
 import { getOrCreateDefaultCity } from '../services/cities.service';
+import { generateCharacter } from '../services/character-gen.service';
 
 const router = Router();
 
@@ -180,6 +182,77 @@ router.delete('/:id', async (req: Request, res: Response) => {
 
   await prisma.world.delete({ where: { id: req.params.id } });
   res.status(204).send();
+});
+
+// ── POST /api/worlds/new-game ────────────────────────────────
+// Create a fresh world, activate it, optionally delete the old active world,
+// and bulk-summon N starting souls. Returns the new world + summon count.
+router.post('/new-game', async (req: Request, res: Response) => {
+  const {
+    name          = 'New World',
+    summon        = 1000,
+    delete_old    = true,
+    population_tier = 'civilization',
+    ruleset_id,
+  } = req.body as {
+    name?:            string;
+    summon?:          number;
+    delete_old?:      boolean;
+    population_tier?: 'intimate' | 'town' | 'civilization';
+    ruleset_id?:      string;
+  };
+
+  // Grab the current active world id before we switch.
+  const oldActive = await prisma.world.findFirst({ where: { is_active: true }, select: { id: true } });
+
+  // Create the new world.
+  const newWorld = await prisma.world.create({
+    data: {
+      name:                     name.trim(),
+      is_active:                false,
+      population_tier:          population_tier as any,
+      ruleset_id:               ruleset_id ?? null,
+      current_year:             1,
+      tick_count:               0,
+      total_deaths:             0,
+      market_index:             100.0,
+      market_trend:             0.015,
+      market_volatility:        0.03,
+      global_traits:            DEFAULT_GLOBAL_TRAITS,
+      global_trait_multipliers: DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
+      active_trait_categories:  [],
+    },
+  });
+
+  await getOrCreateDefaultCity(newWorld.id);
+
+  // Activate the new world (deactivates all others).
+  await prisma.$transaction([
+    prisma.world.updateMany({ where: {},                       data: { is_active: false } }),
+    prisma.world.update    ({ where: { id: newWorld.id },      data: { is_active: true  } }),
+  ]);
+
+  // Delete old world if requested.
+  if (delete_old && oldActive) {
+    await prisma.world.delete({ where: { id: oldActive.id } });
+  }
+
+  // Bulk-summon starting population.
+  const worldTraits = newWorld.global_traits as Record<string, number>;
+  const count = Math.min(Math.max(1, Math.floor(summon)), 5000);
+  const people = Array.from({ length: count }, () => generateCharacter(undefined, worldTraits));
+
+  const summonResult = await prisma.person.createMany({
+    data: people.map(p => ({
+      ...p,
+      world_id:        newWorld.id,
+      criminal_record: p.criminal_record as Prisma.InputJsonValue,
+      traits:          p.traits          as Prisma.InputJsonValue,
+      global_scores:   p.global_scores   as Prisma.InputJsonValue,
+    })),
+  });
+
+  res.status(201).json({ world: { ...newWorld, is_active: true }, summoned: summonResult.count });
 });
 
 export default router;

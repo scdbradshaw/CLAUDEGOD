@@ -24,26 +24,87 @@ function clamp(n: number) {
 }
 
 // ── Name data ─────────────────────────────────────────────────
+// Each pool is 50% modern US realistic, 25% culturally authentic, 25% anglicised/mixed.
 
-const HUMAN_MALE_NAMES = [
-  'Aldric','Brennan','Caspian','Dorian','Edwyn','Faelen','Garrett','Hugo',
-  'Ivar','Jasper','Kiran','Leander','Maddox','Nolan','Oswin','Pierce',
-  'Quillan','Rowan','Stellan','Theron','Ulric','Vance','Weston','Xander','York',
-];
-const HUMAN_FEMALE_NAMES = [
-  'Aelindra','Brynn','Caelith','Dara','Elara','Fenna','Gwen','Hilde',
-  'Isolde','Jessa','Kira','Lena','Maren','Niamh','Owyn','Petra',
-  'Quinn','Reva','Sable','Tess','Una','Vesper','Wren','Xara','Ysolde',
-];
-const ELF_MALE_NAMES   = ['Aelthar','Caladwen','Erevan','Faelindor','Galadon','Ilmyrth','Liriel','Mirendel'];
-const ELF_FEMALE_NAMES = ['Aelindra','Caladria','Elaera','Faelwen','Gilraen','Ioreth','Luthien','Mirial'];
-const DWARF_NAMES      = ['Baldrek','Dolgrin','Forgrim','Gundrak','Haldrik','Korgath','Morgrul','Thordak','Agna','Bofri','Gudla','Helka','Ingra','Kilda','Morda','Thorda'];
-const ORC_NAMES        = ['Grak','Urzog','Thrak','Morg','Krag','Varg','Skorn','Drak','Grasha','Urka','Vorka','Skara','Marka','Nasha'];
-const HALFLING_NAMES   = ['Barlo','Cob','Finwick','Merry','Pip','Rolo','Tob','Wendel','Bree','Calla','Dessa','Fern','Lily','Mira','Nessa','Tam'];
-const TIEFLING_NAMES   = ['Ash','Cinder','Dusk','Ember','Hex','Morrow','Ruin','Sable','Torment','Vex'];
-const SURNAMES         = ['Ashveil','Blackthorn','Coldwater','Duskmantle','Emberholt','Frostwick','Greystone','Hawkmere','Ironwood','Jadepeak','Kessler','Lightbane','Merrow','Nighthollow','Oakhaven','Pinecroft','Redmane','Stormgate','Thornbury','Underhill','Valdris','Whitlock','Yarwick','Zephyrcross'];
+// Caucasian (White / European descent)
+const CAUCASIAN_MALE   = ['Noah','Liam','Ethan','James','Benjamin','Oliver','Henry','William','Mason','Lucas','Edmund','Cornelius','Reginald','Alistair','Hartley','Spencer','Quinn','Dylan','Morgan','Brennan'];
+const CAUCASIAN_FEMALE = ['Emma','Olivia','Sophia','Ava','Isabella','Mia','Charlotte','Harper','Amelia','Evelyn','Harriet','Vivienne','Constance','Beatrice','Millicent','Kelsey','Blair','Sloane','Paige','Riley'];
+const CAUCASIAN_SURNAMES = ['Thompson','Miller','Davis','Wilson','Anderson','Taylor','Harris','Clark','Lewis','Hall','Allen','Walker','Young','Baker','Campbell'];
 
-export const RACES = ['Human','Human','Human','Human','Human','Human','Elf','Elf','Dwarf','Halfling','Half-Orc','Orc','Tiefling','Gnome'];
+// African American (Black / African descent)
+const AFRICAN_AMERICAN_MALE   = ['Jaylen','Marcus','Darius','Jordan','Malik','Andre','Tyrese','Cameron','Isaiah','Deonte','Kofi','Kwame','Adebayo','Jomo','Amiri','DeShawn','Deandre','Quentin','Tariq','Rakim'];
+const AFRICAN_AMERICAN_FEMALE = ['Aaliyah','Destiny','Jasmine','Brianna','Diamond','Keisha','Monique','Shanice','Tiffany','Tasha','Amara','Nia','Adaeze','Zuri','Fatou','Imani','Tiara','Essence','Chanelle','Shanell'];
+const AFRICAN_AMERICAN_SURNAMES = ['Washington','Jefferson','Jackson','Williams','Davis','Robinson','Thompson','Moore','Brown','Harris','Taylor','Thomas','White','Walker','Carter'];
+
+// East Asian (Chinese, Japanese, Korean)
+const EAST_ASIAN_MALE   = ['Kevin','Jason','David','Michael','Brian','Ryan','Daniel','Chris','Eric','James','Hiroshi','Kenji','Jin','Wei','Mingyu','Justin','Derek','Raymond','Nelson','Roland'];
+const EAST_ASIAN_FEMALE = ['Linda','Jenny','Michelle','Lisa','Amy','Christine','Sharon','Grace','Kelly','Karen','Mei','Yuki','Sakura','Xiao','Jiyeon','Vivian','Celine','Angela','Helen','Stella'];
+const EAST_ASIAN_SURNAMES = ['Kim','Lee','Park','Zhang','Liu','Chen','Wang','Yang','Wu','Huang','Zhou','Li','Wong','Tanaka','Yamamoto'];
+
+// South Asian (Indian, Pakistani, Bengali)
+const SOUTH_ASIAN_MALE   = ['Raj','Arjun','Vivek','Rahul','Nikhil','Vikram','Rohan','Kiran','Neil','Arun','Subramaniam','Raghavendra','Jaishankar','Muralidharan','Venkatesh','Dev','Ravi','Jai','Anand','Jay'];
+const SOUTH_ASIAN_FEMALE = ['Priya','Ananya','Neha','Pooja','Divya','Asha','Nisha','Maya','Rina','Preeti','Savitri','Padmavathi','Lakshmi','Kamakshi','Meenakshi','Mia','Leena','Tara','Raina','Kira'];
+const SOUTH_ASIAN_SURNAMES = ['Sharma','Patel','Singh','Kumar','Gupta','Mehta','Rao','Nair','Reddy','Iyer','Pillai','Shah','Joshi','Agarwal','Desai'];
+
+// Southeast Asian (Vietnamese, Filipino, Thai)
+const SOUTHEAST_ASIAN_MALE   = ['Jason','Kevin','Ryan','Michael','Patrick','Mark','Joshua','Nathan','Anthony','Eric','Thanh','Duy','Niran','Bunthan','Viroj','Alex','Ricky','Leo','Christian','Ramon'];
+const SOUTHEAST_ASIAN_FEMALE = ['Jessica','Christine','Michelle','Maria','Lisa','Jennifer','Angela','Karen','Grace','Nicole','Thuy','Lan','Nong','Siriporn','Marisol','Angel','Lovely','Cherry','Joy','Crystal'];
+const SOUTHEAST_ASIAN_SURNAMES = ['Nguyen','Tran','Pham','Santos','Reyes','Cruz','Villanueva','Bautista','Manalo','Thongchai','Srisai','Rattana','Suphan','Nakornthap','Lopez'];
+
+// Hispanic / Latino
+const HISPANIC_MALE   = ['Carlos','Miguel','Eduardo','Roberto','Fernando','Ricardo','Diego','Luis','Jorge','Alejandro','Rigoberto','Baldomero','Celestino','Porfirio','Absalon','Alex','Tony','Jesse','Freddy','Marco'];
+const HISPANIC_FEMALE = ['Sofia','Isabella','Valentina','Camila','Lucia','Gabriela','Andrea','Fernanda','Daniela','Mariana','Guadalupe','Concepcion','Socorro','Inmaculada','Dolores','Bianca','Crystal','Iris','Roxana','Destiny'];
+const HISPANIC_SURNAMES = ['Martinez','Garcia','Rodriguez','Hernandez','Lopez','Gonzalez','Perez','Ramirez','Torres','Flores','Rivera','Morales','Cruz','Jimenez','Romero'];
+
+// Native American
+const NATIVE_AMERICAN_MALE   = ['James','Robert','Michael','John','Thomas','David','William','Charles','Christopher','Joseph','Chayton','Ahanu','Takoda','Nashoba','Waya','Dakota','Hunter','River','Blaze','Timber'];
+const NATIVE_AMERICAN_FEMALE = ['Mary','Linda','Patricia','Barbara','Susan','Karen','Donna','Carol','Ruth','Sharon','Aiyana','Winona','Kaya','Chenoa','Sapana','Sierra','Sequoia','Savannah','Willow','Sage'];
+const NATIVE_AMERICAN_SURNAMES = ['Runningwater','Lightfoot','Strongbow','Littlefeather','Bearcloud','Whitehorse','Redcloud','Swiftwind','Nightwalker','Greywolf','Blackfeather','Morningstar','Eagleheart','Silverwind','Thunderbird'];
+
+// Middle Eastern
+const MIDDLE_EASTERN_MALE   = ['Omar','Hassan','Karim','Tariq','Faris','Rami','Sami','Nabil','Yousef','Ziad','Abdulrahman','Muhammad','Sulayman','Ibraheem','Abdulaziz','Amir','Sam','Elias','Gabriel','Dario'];
+const MIDDLE_EASTERN_FEMALE = ['Leila','Yasmin','Sara','Nadia','Dana','Rania','Hana','Dina','Maya','Rana','Fatimah','Khadijah','Zainab','Maryam','Aisha','Layla','Zara','Lara','Nora','Jenna'];
+const MIDDLE_EASTERN_SURNAMES = ['Hassan','Ibrahim','Khalil','Mansour','Qadri','Rahman','Saleh','Younis','Aziz','Karimi','Rashid','Nasser','Jabri','Khoury','Alfarsi'];
+
+// Indigenous Australian (Aboriginal and Torres Strait Islander)
+const INDIGENOUS_AUSTRALIAN_MALE   = ['Jack','Thomas','Billy','Charlie','Liam','Noah','Oliver','James','Harry','Fred','Jarrah','Mundara','Wirri','Binda','Ngarri','Kodi','Jed','Bryce','Taj','Zane'];
+const INDIGENOUS_AUSTRALIAN_FEMALE = ['Emma','Sarah','Jessica','Amy','Lily','Grace','Ruby','Chloe','Hannah','Lucy','Mirri','Kiah','Marri','Yindi','Bindi','Taylah','Sharnee','Kylie','Tamika','Shantel'];
+const INDIGENOUS_AUSTRALIAN_SURNAMES = ['Williams','Thompson','Johnson','Walker','Anderson','Murphy','Ryan','King','Martin','Lee','Wilson','Taylor','Davis','Cooper','Evans'];
+
+// Polynesian (Hawaiian, Samoan, Maori)
+const POLYNESIAN_MALE   = ['Keanu','Mana','Kai','Levi','Jason','Michael','David','Jacob','Samuel','Nathan','Tane','Hemi','Wiremu','Rangi','Maui','Koa','Makoa','Kalani','Keoni','Kale'];
+const POLYNESIAN_FEMALE = ['Malia','Lani','Hana','Jasmine','Grace','Emma','Lily','Amy','Hannah','Jessica','Moana','Hina','Aroha','Mere','Hinemoa','Keilani','Leilani','Talia','Nalani','Kalea'];
+const POLYNESIAN_SURNAMES = ['Taufa','Faleolo','Kealoha','Paoa','Makoa','Ngata','Nainoa','Kahananui','Maea','Fono','Alatini','Havili','Tupou','Mauga','Toomalatai'];
+
+// Race → name lookup map
+type RaceNames = { male: string[]; female: string[]; surnames: string[] };
+const RACE_NAMES: Record<string, RaceNames> = {
+  'Caucasian':               { male: CAUCASIAN_MALE,              female: CAUCASIAN_FEMALE,              surnames: CAUCASIAN_SURNAMES },
+  'African American':        { male: AFRICAN_AMERICAN_MALE,       female: AFRICAN_AMERICAN_FEMALE,       surnames: AFRICAN_AMERICAN_SURNAMES },
+  'East Asian':              { male: EAST_ASIAN_MALE,             female: EAST_ASIAN_FEMALE,             surnames: EAST_ASIAN_SURNAMES },
+  'South Asian':             { male: SOUTH_ASIAN_MALE,            female: SOUTH_ASIAN_FEMALE,            surnames: SOUTH_ASIAN_SURNAMES },
+  'Southeast Asian':         { male: SOUTHEAST_ASIAN_MALE,        female: SOUTHEAST_ASIAN_FEMALE,        surnames: SOUTHEAST_ASIAN_SURNAMES },
+  'Hispanic/Latino':         { male: HISPANIC_MALE,               female: HISPANIC_FEMALE,               surnames: HISPANIC_SURNAMES },
+  'Native American':         { male: NATIVE_AMERICAN_MALE,        female: NATIVE_AMERICAN_FEMALE,        surnames: NATIVE_AMERICAN_SURNAMES },
+  'Middle Eastern':          { male: MIDDLE_EASTERN_MALE,         female: MIDDLE_EASTERN_FEMALE,         surnames: MIDDLE_EASTERN_SURNAMES },
+  'Indigenous Australian':   { male: INDIGENOUS_AUSTRALIAN_MALE,  female: INDIGENOUS_AUSTRALIAN_FEMALE,  surnames: INDIGENOUS_AUSTRALIAN_SURNAMES },
+  'Polynesian':              { male: POLYNESIAN_MALE,             female: POLYNESIAN_FEMALE,             surnames: POLYNESIAN_SURNAMES },
+};
+// Fallback for any unlisted / mixed race
+const FALLBACK_NAMES: RaceNames = { male: CAUCASIAN_MALE, female: CAUCASIAN_FEMALE, surnames: CAUCASIAN_SURNAMES };
+
+export const RACES = [
+  'Caucasian',
+  'African American',
+  'East Asian',
+  'South Asian',
+  'Southeast Asian',
+  'Hispanic/Latino',
+  'Native American',
+  'Middle Eastern',
+  'Indigenous Australian',
+  'Polynesian',
+];
 
 export const RELIGIONS = ['The Old Faith','The Flame Church','Nature Covenant','Order of the Pale Star','Temple of Coin','Brotherhood of Iron','The Unnamed Path','Church of the Wanderer','Cult of the Deep','Sunwalkers','Agnostic','None'];
 
@@ -103,19 +164,9 @@ const TRAIT_BIASES: Record<string, Partial<Record<string, number>>> = {
 
 export function getName(race: string, gender: string): string {
   const isFemale = gender === 'Female';
-  const first = (() => {
-    switch (race) {
-      case 'Elf':      return pick(isFemale ? ELF_FEMALE_NAMES : ELF_MALE_NAMES);
-      case 'Dwarf':    return pick(DWARF_NAMES);
-      case 'Orc':
-      case 'Half-Orc': return pick(ORC_NAMES);
-      case 'Halfling': return pick(HALFLING_NAMES);
-      case 'Tiefling': return pick(TIEFLING_NAMES);
-      default:         return pick(isFemale ? HUMAN_FEMALE_NAMES : HUMAN_MALE_NAMES);
-    }
-  })();
-  if (race === 'Orc' || race === 'Tiefling') return first;
-  return `${first} ${pick(SURNAMES)}`;
+  const pool = RACE_NAMES[race] ?? FALLBACK_NAMES;
+  const first = pick(isFemale ? pool.female : pool.male);
+  return `${first} ${pick(pool.surnames)}`;
 }
 
 export function getLifespan(_race: string): number {
@@ -128,16 +179,18 @@ export function getAppearance(race: string, gender: string, age: number): string
   const eyeColors  = ['grey','brown','green','blue','amber','violet','silver','gold'];
   const hairColors = ['black','dark brown','auburn','chestnut','golden','silver','white','ash-blonde','copper','raven'];
   const skinTones: Record<string, string[]> = {
-    Human:     ['fair','olive','tawny','dark brown','pale','sun-bronzed'],
-    Elf:       ['porcelain','pale silver','sun-kissed ivory','moonlit white'],
-    Dwarf:     ['ruddy','weather-beaten','tanned','ruddy brown'],
-    Halfling:  ['rosy','tanned','freckled bronze'],
-    Gnome:     ['earthy tan','pale lavender','rosy brown'],
-    Orc:       ['grey-green','dark olive','mossy green','deep grey'],
-    'Half-Orc':['grey-olive','weathered green','dusky olive'],
-    Tiefling:  ['deep crimson','ash grey','pale lavender','midnight blue'],
+    'Caucasian':              ['fair','porcelain','pale ivory','light beige','rosy'],
+    'African American':       ['deep brown','ebony','mahogany','warm chocolate','espresso'],
+    'East Asian':             ['light ivory','porcelain','warm beige','peachy','fair'],
+    'South Asian':            ['warm brown','olive','tawny','golden brown','copper'],
+    'Southeast Asian':        ['warm tan','golden','caramel','medium brown','bronze'],
+    'Hispanic/Latino':        ['golden olive','warm tan','caramel','medium brown','bronze'],
+    'Native American':        ['warm copper','golden brown','deep bronze','tawny','earthen'],
+    'Middle Eastern':         ['warm olive','honey','golden tan','medium brown','amber'],
+    'Indigenous Australian':  ['warm brown','deep brown','copper-brown','dark tan','chocolate'],
+    'Polynesian':             ['warm golden','caramel','deep brown','bronze','copper'],
   };
-  const skin  = pick(skinTones[race] ?? skinTones.Human);
+  const skin  = pick(skinTones[race] ?? ['tawny','fair','olive','medium brown','bronze']);
   const build = pick(builds);
   const eyes  = pick(eyeColors);
   const hair  = pick(hairColors);

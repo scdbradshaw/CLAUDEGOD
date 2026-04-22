@@ -11,6 +11,7 @@ import Rip             from './pages/Rip';
 import RuleLibrary     from './pages/RuleLibrary';
 import WorldDesigner   from './pages/WorldDesigner';
 import People          from './pages/People';
+import Groups          from './pages/Groups';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -41,6 +42,7 @@ export default function App() {
             <Route path="/world"               element={<WorldView />} />
             <Route path="/rules"               element={<RuleLibrary />} />
             <Route path="/worlds"              element={<WorldDesigner />} />
+            <Route path="/groups"              element={<Groups />} />
           </Route>
         </Routes>
       </BrowserRouter>

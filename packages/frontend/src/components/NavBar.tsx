@@ -12,6 +12,7 @@ import type { WorldListItem } from '@civ-sim/shared';
 const NAV_ITEMS = [
   { to: '/',          label: 'World View', glyph: '⊕' },
   { to: '/souls',     label: 'Souls',      glyph: '⚉' },
+  { to: '/groups',    label: 'Groups',     glyph: '⬡' },
   { to: '/chronicle', label: 'Chronicle',  glyph: '◉' },
   { to: '/exchange',  label: 'Exchange',   glyph: '◈' },
   { to: '/fallen',    label: 'The Fallen', glyph: '✝' },

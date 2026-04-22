@@ -161,6 +161,41 @@ function csv(v: unknown): string[] {
   return v.split(',').map(s => s.trim()).filter(Boolean);
 }
 
+// ── Seed counts per population tier ──────────────────────────
+const SEED_COUNT_BY_TIER: Record<'intimate' | 'town' | 'civilization', number> = {
+  intimate:      250,
+  town:          2000,
+  civilization:  5000,
+};
+
+// ── GET /api/characters/seed ─────────────────────────────────
+// NOTE: must be registered BEFORE /:id to avoid being swallowed by the
+// dynamic route.
+router.get('/seed', async (_req: Request, res: Response) => {
+  const world = await getActiveWorld();
+  const existing = await prisma.person.count({ where: { world_id: world.id } });
+  if (existing > 0) {
+    res.json({ seeded: false, count: existing });
+    return;
+  }
+
+  const worldTraits = world.global_traits as Record<string, number>;
+  const seedCount = SEED_COUNT_BY_TIER[world.population_tier as keyof typeof SEED_COUNT_BY_TIER] ?? 250;
+  const people = Array.from({ length: seedCount }, () => generateCharacter(undefined, worldTraits));
+
+  const result = await prisma.person.createMany({
+    data: people.map(p => ({
+      ...p,
+      world_id:        world.id,
+      criminal_record: p.criminal_record as Prisma.InputJsonValue,
+      traits:          p.traits          as Prisma.InputJsonValue,
+      global_scores:   p.global_scores   as Prisma.InputJsonValue,
+    })),
+  });
+
+  res.status(201).json({ seeded: true, count: result.count, tier: world.population_tier });
+});
+
 // ── GET /api/characters/:id ──────────────────────────────────
 router.get('/:id', async (req: Request, res: Response) => {
   const person = await prisma.person.findUniqueOrThrow({
@@ -214,42 +249,6 @@ router.get('/:id/lineage', async (req: Request, res: Response) => {
   const children = [...childMap.values()].sort((a, b) => a.age - b.age);
 
   res.json({ parents, children });
-});
-
-// ── Seed counts per population tier ──────────────────────────
-// Drives GET /api/characters/seed — an empty world seeds to the middle
-// of its tier's range, giving the player something to work with without
-// over-committing. A /bulk call can still stretch higher post-seed.
-const SEED_COUNT_BY_TIER: Record<'intimate' | 'town' | 'civilization', number> = {
-  intimate:      250,
-  town:          2000,
-  civilization:  5000,
-};
-
-// ── GET /api/characters/seed ─────────────────────────────────
-router.get('/seed', async (_req: Request, res: Response) => {
-  const world = await getActiveWorld();
-  const existing = await prisma.person.count({ where: { world_id: world.id } });
-  if (existing > 0) {
-    res.json({ seeded: false, count: existing });
-    return;
-  }
-
-  const worldTraits = world.global_traits as Record<string, number>;
-  const seedCount = SEED_COUNT_BY_TIER[world.population_tier as keyof typeof SEED_COUNT_BY_TIER] ?? 250;
-  const people = Array.from({ length: seedCount }, () => generateCharacter(undefined, worldTraits));
-
-  const result = await prisma.person.createMany({
-    data: people.map(p => ({
-      ...p,
-      world_id:        world.id,
-      criminal_record: p.criminal_record as Prisma.InputJsonValue,
-      traits:          p.traits          as Prisma.InputJsonValue,
-      global_scores:   p.global_scores   as Prisma.InputJsonValue,
-    })),
-  });
-
-  res.status(201).json({ seeded: true, count: result.count, tier: world.population_tier });
 });
 
 // ── POST /api/characters/bulk ────────────────────────────────
@@ -367,45 +366,53 @@ router.delete('/:id', async (req: Request, res: Response) => {
 router.post('/bulk-kill',
   validate(z.object({ count: z.number().int().min(1).max(1000) })),
   async (req: Request, res: Response) => {
-    const world = await getActiveWorld();
+    try {
+      const world = await getActiveWorld();
+      const count = req.body.count as number;
 
-    const targets = await prisma.$queryRaw<
-      Array<{ id: string; name: string; age: number; wealth: number }>
-    >`
-      SELECT id, name, age, wealth
-      FROM persons
-      WHERE world_id = ${world.id}::uuid AND health > 0
-      ORDER BY RANDOM()
-      LIMIT ${req.body.count}
-    `;
+      const targets = await prisma.$queryRaw<
+        Array<{ id: string; name: string; age: number; wealth: number }>
+      >(
+        Prisma.sql`
+          SELECT id, name, age, wealth
+          FROM persons
+          WHERE world_id = ${world.id}::uuid AND health > 0
+          ORDER BY RANDOM()
+          LIMIT ${Prisma.raw(String(count))}
+        `
+      );
 
-    if (targets.length === 0) {
-      res.json({ killed: 0, names: [] });
-      return;
+      if (targets.length === 0) {
+        res.json({ killed: 0, names: [] });
+        return;
+      }
+
+      const ids = targets.map((t) => t.id);
+
+      await prisma.$transaction(async (tx) => {
+        await tx.deceasedPerson.createMany({
+          data: targets.map((p) => ({
+            name:         p.name,
+            age_at_death: p.age,
+            world_year:   world.current_year,
+            cause:        'god_mode',
+            final_health: 0,
+            final_wealth: typeof p.wealth === 'number' ? p.wealth : parseFloat(String(p.wealth)),
+            world_id:     world.id,
+          })),
+        });
+        await tx.person.deleteMany({ where: { id: { in: ids } } });
+        await tx.world.update({
+          where: { id: world.id },
+          data:  { total_deaths: { increment: targets.length } },
+        });
+      });
+
+      res.json({ killed: targets.length, names: targets.map((t) => t.name) });
+    } catch (err) {
+      console.error('[bulk-kill] error:', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Unknown error' });
     }
-
-    await prisma.$transaction(async (tx) => {
-      await tx.deceasedPerson.createMany({
-        data: targets.map((p) => ({
-          name:         p.name,
-          age_at_death: p.age,
-          world_year:   world.current_year,
-          cause:        'god_mode',
-          final_health: 0,
-          final_wealth: p.wealth,
-          world_id:     world.id,
-        })),
-      });
-      await tx.person.deleteMany({
-        where: { id: { in: targets.map((t) => t.id) } },
-      });
-      await tx.world.update({
-        where: { id: world.id },
-        data:  { total_deaths: { increment: targets.length } },
-      });
-    });
-
-    res.json({ killed: targets.length, names: targets.map((t) => t.name) });
   },
 );
 

@@ -78,6 +78,45 @@ export interface LineageResponse {
 
 export type { City, CityWithStats } from '@civ-sim/shared';
 
+// ── Group types ──────────────────────────────────────────────
+
+export interface GroupListItem {
+  id:            string;
+  name:          string;
+  description:   string | null;
+  is_active:     boolean;
+  member_count:  number;
+  cost_per_tick: number;
+  tolerance:     number;
+  virus_profile: Record<string, { min?: number; max?: number }>;
+  trait_minimums: Record<string, number>;
+  founded_year:  number;
+  founder:       { id: string; name: string } | null;
+  leader?:       { id: string; name: string } | null;
+  origin:        string;
+}
+
+export interface GroupMember {
+  id:         string;
+  alignment:  number;
+  joined_year: number;
+  person:     { id: string; name: string; age: number };
+}
+
+export interface GroupDetail extends GroupListItem {
+  memberships: GroupMember[];
+}
+
+export interface PatchGroupBody {
+  name?:           string;
+  description?:    string | null;
+  tolerance?:      number;
+  cost_per_tick?:  number;
+  virus_profile?:  Record<string, { min?: number; max?: number }>;
+  trait_minimums?: Record<string, number>;
+  leader_id?:      string | null;
+}
+
 const BASE = '/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -198,16 +237,36 @@ export const api = {
 
   religions: {
     list: (activeOnly = true) =>
-      request<Array<{ id: string; name: string; is_active: boolean; member_count: number }>>(
-        `/religions${activeOnly ? '?active=true' : ''}`,
-      ),
+      request<GroupListItem[]>(`/religions${activeOnly ? '?active=true' : ''}`),
+    get: (id: string) =>
+      request<GroupDetail>(`/religions/${id}`),
+    patch: (id: string, body: PatchGroupBody) =>
+      request<GroupDetail>(`/religions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    addMember: (id: string, person_id: string) =>
+      request<{ id: string }>(`/religions/${id}/members`, { method: 'POST', body: JSON.stringify({ person_id }) }),
+    removeMember: (id: string, person_id: string) =>
+      request<void>(`/religions/${id}/members/${person_id}`, { method: 'DELETE' }),
+    dissolve: (id: string, reason = 'player') =>
+      request<GroupDetail>(`/religions/${id}/dissolve`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    delete: (id: string) =>
+      request<void>(`/religions/${id}`, { method: 'DELETE' }),
   },
 
   factions: {
     list: (activeOnly = true) =>
-      request<Array<{ id: string; name: string; is_active: boolean; member_count: number }>>(
-        `/factions${activeOnly ? '?active=true' : ''}`,
-      ),
+      request<GroupListItem[]>(`/factions${activeOnly ? '?active=true' : ''}`),
+    get: (id: string) =>
+      request<GroupDetail>(`/factions/${id}`),
+    patch: (id: string, body: PatchGroupBody) =>
+      request<GroupDetail>(`/factions/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+    addMember: (id: string, person_id: string) =>
+      request<{ id: string }>(`/factions/${id}/members`, { method: 'POST', body: JSON.stringify({ person_id }) }),
+    removeMember: (id: string, person_id: string) =>
+      request<void>(`/factions/${id}/members/${person_id}`, { method: 'DELETE' }),
+    dissolve: (id: string, reason = 'player') =>
+      request<GroupDetail>(`/factions/${id}/dissolve`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    delete: (id: string) =>
+      request<void>(`/factions/${id}`, { method: 'DELETE' }),
   },
 
   worlds: {
@@ -234,6 +293,12 @@ export const api = {
 
     delete: (id: string) =>
       request<void>(`/worlds/${id}`, { method: 'DELETE' }),
+
+    newGame: (opts: { name?: string; summon?: number; delete_old?: boolean; population_tier?: PopulationTier; ruleset_id?: string } = {}) =>
+      request<{ world: World; summoned: number }>('/worlds/new-game', {
+        method: 'POST',
+        body:   JSON.stringify(opts),
+      }),
   },
 
   interactions: {

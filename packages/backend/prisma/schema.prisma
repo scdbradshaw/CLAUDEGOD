@@ -449,6 +449,10 @@ model Religion {
   tolerance     Int         @default(10)
   /// Trait/global-score thresholds (see above comment).
   virus_profile Json        @default("{}")
+  /// Wealth deducted per tick from each member (god-mode configurable).
+  cost_per_tick Int         @default(0)
+  /// Minimum trait values required for membership, e.g. { "intelligence": 60 }.
+  trait_minimums Json       @default("{}")
 
   founded_year     Int
   is_active        Boolean @default(true)
@@ -511,6 +515,10 @@ model Faction {
   origin        GroupOrigin @default(emergent)
   tolerance     Int         @default(10)
   virus_profile Json        @default("{}")
+  /// Wealth deducted per tick from each member (god-mode configurable).
+  cost_per_tick  Int        @default(0)
+  /// Minimum trait values required for membership, e.g. { "charisma": 50 }.
+  trait_minimums Json       @default("{}")
 
   founded_year     Int
   is_active        Boolean @default(true)

@@ -44,14 +44,12 @@ async function buildWorldContext(year: number, worldId: string) {
 
   const w = { world_id: worldId };
 
-  const [lowestMorality, highestInfluence, lowestHealth, highestWealth, lowestWealth, oldest] =
+  const [lowestHealth, highestWealth, lowestWealth, oldest] =
     await Promise.all([
-      prisma.person.findFirst({ where: w, orderBy: { morality: 'asc' },   take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { influence: 'desc' }, take: 1 }),
       prisma.person.findFirst({ where: { ...w, health: { gt: 0 } }, orderBy: { health: 'asc' }, take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { wealth: 'desc' },    take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { wealth: 'asc' },     take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { age: 'desc' },       take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { wealth: 'desc' }, take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { wealth: 'asc' },  take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { age: 'desc' },    take: 1 }),
     ]);
 
   const deaths = await prisma.memoryBank.findMany({
@@ -64,7 +62,7 @@ async function buildWorldContext(year: number, worldId: string) {
     take: 5,
   });
 
-  return { active, lowestMorality, highestInfluence, lowestHealth, highestWealth, lowestWealth, oldest, deaths };
+  return { active, lowestHealth, highestWealth, lowestWealth, oldest, deaths };
 }
 
 // ── Claude call ────────────────────────────────────────────────────────────
@@ -111,20 +109,18 @@ async function callClaude(year: number, context: Awaited<ReturnType<typeof build
     year,
     active_characters: context.active.map(p => ({
       id: p.id, name: p.name, race: p.race, age: p.age,
-      health: p.health, morality: p.morality, happiness: p.happiness,
-      reputation: p.reputation, influence: p.influence, wealth: p.wealth,
+      health: p.health, wealth: p.wealth,
       relationship_status: p.relationship_status, criminal_record: p.criminal_record,
+      traits: p.traits,
       recent_memories: p.memory_bank.map(m => ({
         summary: m.event_summary, impact: m.emotional_impact, delta: m.delta_applied,
       })),
     })),
     notable: {
-      lowest_morality:   context.lowestMorality   ? { id: context.lowestMorality.id,   name: context.lowestMorality.name,   morality: context.lowestMorality.morality }     : null,
-      highest_influence: context.highestInfluence  ? { id: context.highestInfluence.id, name: context.highestInfluence.name, influence: context.highestInfluence.influence }  : null,
-      lowest_health:     context.lowestHealth      ? { id: context.lowestHealth.id,     name: context.lowestHealth.name,     health: context.lowestHealth.health }             : null,
-      highest_wealth:    context.highestWealth     ? { id: context.highestWealth.id,    name: context.highestWealth.name,    wealth: context.highestWealth.wealth }             : null,
-      lowest_wealth:     context.lowestWealth      ? { id: context.lowestWealth.id,     name: context.lowestWealth.name,     wealth: context.lowestWealth.wealth }             : null,
-      oldest:            context.oldest            ? { id: context.oldest.id,           name: context.oldest.name,           age: context.oldest.age }                         : null,
+      lowest_health:  context.lowestHealth  ? { id: context.lowestHealth.id,  name: context.lowestHealth.name,  health: context.lowestHealth.health }   : null,
+      highest_wealth: context.highestWealth ? { id: context.highestWealth.id, name: context.highestWealth.name, wealth: context.highestWealth.wealth }   : null,
+      lowest_wealth:  context.lowestWealth  ? { id: context.lowestWealth.id,  name: context.lowestWealth.name,  wealth: context.lowestWealth.wealth }    : null,
+      oldest:         context.oldest        ? { id: context.oldest.id,        name: context.oldest.name,        age: context.oldest.age }                : null,
     },
     deaths_this_year: context.deaths.map(d => ({ name: d.person?.name, summary: d.event_summary })),
   }, null, 2);

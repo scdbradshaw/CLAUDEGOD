@@ -252,6 +252,26 @@ export interface PassiveDriftRule {
   max:        number;
 }
 
+/**
+ * Capability gates — thresholds a person must clear to perform high-stakes
+ * actions. Stored in the ruleset so every world can tune them independently.
+ * All fields optional; hard-coded fallback constants are used when absent.
+ */
+export interface CapabilityGates {
+  /** Founding a new religion */
+  found_religion?: { leadership_min: number; charisma_min: number };
+  /** Founding a new faction */
+  found_faction?:  { leadership_min: number; charisma_min: number };
+  /** Agentic murder action */
+  agentic_murder?: { honesty_max: number; bond_max: number };
+  /** Agentic marry action */
+  agentic_marry?:  { bond_min: number };
+  /** Agentic betray action */
+  agentic_betray?: { bond_min: number };
+  /** Agentic befriend action */
+  agentic_befriend?: { bond_min: number; bond_max: number };
+}
+
 export interface RulesetDef {
   version:           number;
   interaction_types: InteractionTypeDef[];
@@ -259,6 +279,8 @@ export interface RulesetDef {
   outcome_bands:     OutcomeBand[];
   /** Optional per-tick passive drifts applied to every living person */
   passive_drifts?:   PassiveDriftRule[];
+  /** Optional capability gate overrides. Falls back to engine defaults when absent. */
+  capability_gates?: CapabilityGates;
 }
 
 // --------------- Global trait multipliers ---------------
@@ -352,7 +374,6 @@ export interface DeceasedPerson {
   cause:                 string;
   final_health:          number;
   final_wealth:          number;
-  final_happiness:       number;
   peak_positive_outcome: string | null;
   peak_negative_outcome: string | null;
   died_at:               string;
@@ -403,13 +424,9 @@ export interface Person {
   religion:            string;
   criminal_record:     CriminalRecord[];
 
-  // ── Stats (0 – 100) ──────────────────────────────────────
+  // ── Vital stat ───────────────────────────────────────────
+  /// Life/death column, synced from traits.health. 0 = dead.
   health:              number;
-  morality:            number;
-  happiness:           number;
-  reputation:          number;
-  influence:           number;
-  intelligence:        number;
 
   // ── Other ────────────────────────────────────────────────
   physical_appearance: string;
@@ -621,7 +638,6 @@ export interface CharacterListItem {
   name:          string;
   age:           number;
   health:        number;
-  happiness:     number;
   wealth:        number;
   updated_at:    string;
   global_scores: Record<string, number>;
@@ -640,12 +656,11 @@ export interface PeopleListItem {
   race:          string;
   religion:      string;
   health:        number;
-  morality:      number;
-  happiness:     number;
-  influence:     number;
   wealth:        number;
   updated_at:    string;
   global_scores: Record<string, number>;
+  /** Subset of identity traits for quick display (from traits JSONB) */
+  traits:        Record<string, number>;
   factions:      { id: string; name: string }[];
 }
 
@@ -653,9 +668,7 @@ export type PeopleStatus = 'alive' | 'dead' | 'all';
 export type PeopleSortField =
   | 'name'
   | 'age'
-  | 'morality'
   | 'wealth'
-  | 'influence'
   | 'health'
   | 'updated_at';
 
@@ -689,15 +702,14 @@ type NumericOp = 'lt' | 'lte' | 'gt' | 'gte';
 /**
  * One filter clause. All clauses in a FilterQuery are AND-composed.
  *
- * Scalar fields: age, health, morality, happiness, reputation, influence,
- *   intelligence, wealth
+ * Scalar fields: age, health, wealth
  * Demographic fields: race, occupation, religion, gender
  * JSONB dot-paths: trait.<key>  (identity attributes, 0-100)
  *                  global_score.<key>  (e.g. "war.morale")
  */
 export type FilterClause =
-  | { field: 'age' | 'health' | 'morality' | 'happiness' | 'reputation' | 'influence' | 'intelligence' | 'wealth'; op: NumericOp; value: number }
-  | { field: 'age' | 'health' | 'morality' | 'happiness' | 'reputation' | 'influence' | 'intelligence' | 'wealth'; op: 'between'; min: number; max: number }
+  | { field: 'age' | 'health' | 'wealth'; op: NumericOp; value: number }
+  | { field: 'age' | 'health' | 'wealth'; op: 'between'; min: number; max: number }
   | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'eq'; value: string }
   | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'in'; values: string[] }
   | { field: `trait.${string}`; op: NumericOp; value: number }
@@ -725,7 +737,7 @@ export interface BulkDeltaField {
  * trait paths (e.g. "trait.charisma"). String demographic fields only accept
  * mode 'set' and the value is ignored — use a separate string field instead.
  *
- * Numeric stats (health, morality, etc.) are clamped 0-100 after application.
+ * Numeric stats (health, etc.) are clamped 0-100 after application.
  * Wealth is unclamped. Trait values are clamped 0-100.
  */
 export interface BulkActionRequest {

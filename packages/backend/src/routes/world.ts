@@ -26,7 +26,7 @@ router.get('/', async (_req: Request, res: Response) => {
   const agg   = await prisma.person.aggregate({
     where:  { world_id: world.id },
     _count: { id: true },
-    _avg:   { health: true, happiness: true, morality: true, wealth: true },
+    _avg:   { health: true, wealth: true },
   });
 
   const globalTraits = Object.keys((world.global_traits as object) ?? {}).length
@@ -50,10 +50,8 @@ router.get('/', async (_req: Request, res: Response) => {
     market_trend:             world.market_trend,
     market_volatility:        world.market_volatility,
     population:               agg._count.id,
-    avg_health:               Math.round(agg._avg.health    ?? 0),
-    avg_happiness:            Math.round(agg._avg.happiness ?? 0),
-    avg_morality:             Math.round(agg._avg.morality  ?? 0),
-    avg_wealth:               Math.round(agg._avg.wealth    ?? 0),
+    avg_health:               Math.round(agg._avg.health ?? 0),
+    avg_wealth:               Math.round(agg._avg.wealth ?? 0),
     force_scores,
     global_traits:            globalTraits,
     global_trait_multipliers: multipliers,

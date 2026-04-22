@@ -83,9 +83,7 @@ export default function World() {
         <span className="text-xs text-zinc-500 uppercase tracking-widest">Population Averages</span>
 
         <div className="space-y-2.5">
-          <StatBar label="Health"    value={data.avg_health}    />
-          <StatBar label="Happiness" value={data.avg_happiness} />
-          <StatBar label="Morality"  value={data.avg_morality}  />
+          <StatBar label="Health" value={data.avg_health} />
         </div>
 
         <div className="pt-2 border-t border-border text-[11px]">

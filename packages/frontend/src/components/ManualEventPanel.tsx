@@ -10,10 +10,7 @@ import { api } from '../api/client';
 
 const EMOTIONAL_OPTS = ['traumatic', 'negative', 'neutral', 'positive', 'euphoric'] as const;
 
-const STAT_KEYS = [
-  'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence',
-  'age', 'death_age', 'wealth',
-] as const;
+const STAT_KEYS = ['health', 'age', 'death_age', 'wealth'] as const;
 
 interface DeltaRow {
   id:    number;
@@ -25,7 +22,7 @@ let _seq = 0;
 const nextId = () => ++_seq;
 
 function defaultRow(): DeltaRow {
-  return { id: nextId(), key: 'happiness', value: '' };
+  return { id: nextId(), key: 'health', value: '' };
 }
 
 export default function ManualEventPanel() {

@@ -12,15 +12,14 @@
 // ============================================================
 
 import type { Prisma } from '@prisma/client';
-import type { VirusProfile, OutcomeBand } from '@civ-sim/shared';
+import type { VirusProfile, OutcomeBand, CapabilityGates } from '@civ-sim/shared';
 import type { GroupKind, PersonSnapshot } from './membership.service';
 
 // ── Tunables ────────────────────────────────────────────────
-/** Minimum leadership / charisma / influence required for emergent spawn. */
+/** Minimum leadership / charisma required for emergent spawn (fallback). */
 export const CAPABILITY_GATE = {
   leadership: 60,
   charisma:   55,
-  influence:  40,
 } as const;
 
 /** Probability per qualifying dramatic event that an emergent group spawns. */
@@ -42,14 +41,15 @@ export interface SpawnIntent {
 // ── Capability gate ─────────────────────────────────────────
 
 /** Does this person have the raw stats to rally others around them? */
-export function meetsCapabilityGate(p: PersonSnapshot): boolean {
-  const leadership = p.traits.leadership ?? 0;
-  const charisma   = p.traits.charisma   ?? 0;
-  return (
-    leadership    >= CAPABILITY_GATE.leadership &&
-    charisma      >= CAPABILITY_GATE.charisma &&
-    p.influence   >= CAPABILITY_GATE.influence
-  );
+export function meetsCapabilityGate(
+  p:     PersonSnapshot,
+  gates?: CapabilityGates['found_religion'] | CapabilityGates['found_faction'],
+): boolean {
+  const leadershipMin = gates?.leadership_min ?? CAPABILITY_GATE.leadership;
+  const charismaMin   = gates?.charisma_min   ?? CAPABILITY_GATE.charisma;
+  const leadership = p.traits['leadership'] ?? 0;
+  const charisma   = p.traits['charisma']   ?? 0;
+  return leadership >= leadershipMin && charisma >= charismaMin;
 }
 
 // ── Virus profile derivation ────────────────────────────────

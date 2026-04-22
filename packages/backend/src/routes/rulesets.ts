@@ -14,7 +14,7 @@ const router = Router();
 // IDENTITY_ATTRIBUTES. Any unknown trait key is silently skipped by
 // the engine, so rulesets can evolve ahead of the attribute schema.
 export const DEFAULT_RULESET: RulesetDef = {
-  version: 3,
+  version: 4,
 
   interaction_types: [
     {
@@ -126,12 +126,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  1.0,
       subject_effect: {
         stat_delta:    [25, 40],
-        affects_stats: ['health', 'happiness', 'reputation', 'influence'],
+        affects_stats: ['health', 'resilience', 'charisma', 'leadership'],
         trait_deltas:  { courage: 2, ambition: 1, resilience: 1 },
       },
       antagonist_effect: {
         stat_delta:    [-25, -10],
-        affects_stats: ['reputation', 'happiness'],
+        affects_stats: ['charisma', 'resilience'],
       },
       can_die:          false,
       creates_memory:   true,
@@ -143,11 +143,11 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.75,
       subject_effect: {
         stat_delta:    [10, 25],
-        affects_stats: ['health', 'happiness', 'reputation'],
+        affects_stats: ['health', 'resilience', 'charisma'],
       },
       antagonist_effect: {
         stat_delta:    [-10, -3],
-        affects_stats: ['reputation', 'happiness'],
+        affects_stats: ['charisma', 'resilience'],
       },
       can_die:          false,
       creates_memory:   true,
@@ -159,11 +159,11 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.35,
       subject_effect: {
         stat_delta:    [3, 10],
-        affects_stats: ['happiness'],
+        affects_stats: ['resilience'],
       },
       antagonist_effect: {
         stat_delta:    [-3, 0],
-        affects_stats: ['happiness'],
+        affects_stats: ['resilience'],
       },
       can_die:          false,
       creates_memory:   false,
@@ -187,11 +187,11 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.35,
       subject_effect: {
         stat_delta:    [-15, -5],
-        affects_stats: ['happiness', 'health'],
+        affects_stats: ['resilience', 'health'],
       },
       antagonist_effect: {
         stat_delta:    [-3, 3],
-        affects_stats: ['happiness'],
+        affects_stats: ['resilience'],
       },
       can_die:          false,
       creates_memory:   false,
@@ -203,12 +203,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.75,
       subject_effect: {
         stat_delta:    [-30, -15],
-        affects_stats: ['health', 'happiness', 'reputation'],
+        affects_stats: ['health', 'resilience', 'charisma'],
         trait_deltas:  { courage: -1, resilience: -1 },
       },
       antagonist_effect: {
         stat_delta:    [-5, 5],
-        affects_stats: ['reputation'],
+        affects_stats: ['charisma'],
       },
       can_die:          false,
       creates_memory:   true,
@@ -220,18 +220,27 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  1.0,
       subject_effect: {
         stat_delta:    [-60, -30],
-        affects_stats: ['health', 'happiness', 'reputation'],
+        affects_stats: ['health', 'resilience', 'charisma'],
         trait_deltas:  { courage: -2, resilience: -2, empathy: -1 },
       },
       antagonist_effect: {
         stat_delta:    [-15, 5],
-        affects_stats: ['reputation', 'morality'],
+        affects_stats: ['charisma', 'honesty'],
       },
       can_die:          true,
       creates_memory:   true,
       creates_headline: true,
     },
   ],
+
+  capability_gates: {
+    found_religion: { leadership_min: 60, charisma_min: 55 },
+    found_faction:  { leadership_min: 60, charisma_min: 55 },
+    agentic_murder: { honesty_max: 25, bond_max: 15 },
+    agentic_marry:  { bond_min: 80 },
+    agentic_betray: { bond_min: 75 },
+    agentic_befriend: { bond_min: 55, bond_max: 74 },
+  },
 
   // Applied to every living person each tick. Formula per stat:
   //   drift = clamp(base + Σ(global[key] × multiplier), min, max)
@@ -246,7 +255,7 @@ export const DEFAULT_RULESET: RulesetDef = {
       min: -5, max: 2,
     },
     {
-      stat: 'happiness',
+      stat: 'resilience',
       base:  0,
       inputs: [
         { key: 'faith.spiritual_comfort', multiplier: 0.02 },

@@ -65,16 +65,16 @@ export interface Archetype {
 }
 
 export const ARCHETYPES: Archetype[] = [
-  { label: 'noble',    statBias: { reputation: 20, influence: 25 },              wealthMin: 80_000,  wealthMax: 600_000, ageMin: 20, ageMax: 65 },
-  { label: 'merchant', statBias: { intelligence: 15, influence: 10 },            wealthMin: 10_000,  wealthMax: 200_000, ageMin: 25, ageMax: 60 },
-  { label: 'soldier',  statBias: { health: 20, reputation: 5 },                  wealthMin: 500,     wealthMax: 5_000,   ageMin: 18, ageMax: 45 },
-  { label: 'criminal', statBias: { morality: -30, influence: 10, happiness: -10 }, wealthMin: 200,   wealthMax: 15_000,  ageMin: 16, ageMax: 50 },
-  { label: 'scholar',  statBias: { intelligence: 25, influence: 5 },             wealthMin: 1_000,   wealthMax: 8_000,   ageMin: 22, ageMax: 70 },
-  { label: 'priest',   statBias: { morality: 20, reputation: 10, happiness: 10 }, wealthMin: 300,    wealthMax: 4_000,   ageMin: 25, ageMax: 75 },
-  { label: 'farmer',   statBias: { health: 10, happiness: 5, morality: 5 },      wealthMin: 50,      wealthMax: 2_000,   ageMin: 16, ageMax: 70 },
-  { label: 'wanderer', statBias: { happiness: -5, intelligence: 5 },             wealthMin: 0,       wealthMax: 500,     ageMin: 16, ageMax: 60 },
-  { label: 'artisan',  statBias: { reputation: 10, happiness: 10 },              wealthMin: 1_000,   wealthMax: 12_000,  ageMin: 20, ageMax: 65 },
-  { label: 'elder',    statBias: { intelligence: 10, reputation: 15, health: -15 }, wealthMin: 2_000, wealthMax: 30_000, ageMin: 60, ageMax: 90 },
+  { label: 'noble',    statBias: {},  wealthMin: 80_000,  wealthMax: 600_000, ageMin: 20, ageMax: 65 },
+  { label: 'merchant', statBias: {},  wealthMin: 10_000,  wealthMax: 200_000, ageMin: 25, ageMax: 60 },
+  { label: 'soldier',  statBias: {},  wealthMin: 500,     wealthMax: 5_000,   ageMin: 18, ageMax: 45 },
+  { label: 'criminal', statBias: {},  wealthMin: 200,     wealthMax: 15_000,  ageMin: 16, ageMax: 50 },
+  { label: 'scholar',  statBias: {},  wealthMin: 1_000,   wealthMax: 8_000,   ageMin: 22, ageMax: 70 },
+  { label: 'priest',   statBias: {},  wealthMin: 300,     wealthMax: 4_000,   ageMin: 25, ageMax: 75 },
+  { label: 'farmer',   statBias: {},  wealthMin: 50,      wealthMax: 2_000,   ageMin: 16, ageMax: 70 },
+  { label: 'wanderer', statBias: {},  wealthMin: 0,       wealthMax: 500,     ageMin: 16, ageMax: 60 },
+  { label: 'artisan',  statBias: {},  wealthMin: 1_000,   wealthMax: 12_000,  ageMin: 20, ageMax: 65 },
+  { label: 'elder',    statBias: {},  wealthMin: 2_000,   wealthMax: 30_000,  ageMin: 60, ageMax: 90 },
 ];
 
 export const ARCHETYPE_LABELS = ARCHETYPES.map(a => a.label);
@@ -84,14 +84,14 @@ export const ARCHETYPE_LABELS = ARCHETYPES.map(a => a.label);
 const TRAIT_BIASES: Record<string, Partial<Record<string, number>>> = {
   noble:    { leadership: 25, charisma: 20, ambition: 20, beauty: 15, persuasion: 15 },
   merchant: { cunning: 25, persuasion: 25, ambition: 20, intelligence: 10 },
-  soldier:  { combat: 25, strength: 20, endurance: 20, courage: 15, discipline: 10 },
+  soldier:  { combat: 25, strength: 20, endurance: 20, courage: 15, discipline: 10, health: 15 },
   criminal: { cunning: 25, street_smarts: 20, honesty: -30, resilience: 15 },
   scholar:  { intelligence: 25, curiosity: 25, memory: 20, creativity: 15 },
   priest:   { empathy: 20, discipline: 25, charisma: 15, resilience: 15, honesty: 10 },
-  farmer:   { endurance: 20, strength: 15, resilience: 20, discipline: 10 },
+  farmer:   { endurance: 20, strength: 15, resilience: 20, discipline: 10, health: 10 },
   wanderer: { survival: 25, street_smarts: 20, resilience: 15, agility: 10 },
   artisan:  { craftsmanship: 25, artistry: 20, creativity: 15, discipline: 10 },
-  elder:    { intelligence: 10, empathy: 20, resilience: 20, memory: 15, wisdom: 15 },
+  elder:    { intelligence: 10, empathy: 20, resilience: 20, memory: 15, health: -15 },
 };
 
 // ── Generation functions ──────────────────────────────────────
@@ -113,17 +113,9 @@ export function getName(race: string, gender: string): string {
   return `${first} ${pick(SURNAMES)}`;
 }
 
-export function getLifespan(race: string): number {
-  switch (race) {
-    case 'Elf':      return rnd(250, 700);
-    case 'Dwarf':    return rnd(150, 300);
-    case 'Halfling': return rnd(80, 130);
-    case 'Gnome':    return rnd(100, 200);
-    case 'Orc':      return rnd(40, 70);
-    case 'Half-Orc': return rnd(60, 90);
-    case 'Tiefling': return rnd(90, 120);
-    default:         return rnd(65, 90);
-  }
+export function getLifespan(_race: string): number {
+  // v1 design: all characters use the same 60-95 year lifespan.
+  return rnd(60, 95);
 }
 
 export function getAppearance(race: string, gender: string, age: number): string {
@@ -186,14 +178,11 @@ export interface GeneratedCharacter {
   relationship_status: string;
   religion:            string;
   criminal_record:     object[];
+  /** Life/death column — synced from traits.health at generation time. */
   health:              number;
-  morality:            number;
-  happiness:           number;
-  reputation:          number;
-  influence:           number;
-  intelligence:        number;
   physical_appearance: string;
   wealth:              number;
+  /** All 25 identity attributes (0-100), including health. */
   traits:              Record<string, number>;
   global_scores:       Record<string, number>;
 }
@@ -209,11 +198,12 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
   const age       = Math.min(rnd(archetype.ageMin, archetype.ageMax), death_age - 1);
   const sexuality = pick(SEXUALITIES);
 
-  const base = () => rnd(30, 70);
-  const stat = (key: string, b: number) => clamp(b + (archetype.statBias[key] ?? 0));
+  const traits   = generateTraits(archetype.label);
+  // Health column synced from traits.health so they start in agreement.
+  const health   = traits['health'] ?? 100;
 
   const criminalRecord = archetype.label === 'criminal' && Math.random() > 0.3
-    ? [{ offense: pick(['Theft','Assault','Smuggling','Fraud','Arson','Murder','Extortion','Trespassing']), date: `${rnd(2010,2023)}-${String(rnd(1,12)).padStart(2,'0')}-${String(rnd(1,28)).padStart(2,'0')}`, severity: pick(['minor','moderate','severe']), status: pick(['convicted','pending','acquitted']) }]
+    ? [{ offense: pick(['Theft','Assault','Smuggling','Fraud','Arson','Murder','Extortion','Trespassing']), date: `Year ${rnd(1,50)}`, severity: pick(['minor','moderate','severe']), status: pick(['convicted','pending','acquitted']) }]
     : [];
 
   return {
@@ -227,15 +217,10 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
     relationship_status: pick(RELATIONSHIPS),
     religion:            pick(RELIGIONS),
     criminal_record:     criminalRecord,
-    health:              stat('health',       base()),
-    morality:            stat('morality',     base()),
-    happiness:           stat('happiness',    base()),
-    reputation:          stat('reputation',   base()),
-    influence:           stat('influence',    base()),
-    intelligence:        stat('intelligence', base()),
+    health,
     physical_appearance: getAppearance(race, gender, age),
     wealth:              parseFloat((Math.random() * (archetype.wealthMax - archetype.wealthMin) + archetype.wealthMin).toFixed(2)),
-    traits:              generateTraits(archetype.label),
+    traits,
     global_scores:       generateGlobalScores(worldGlobalTraits),
   };
 }

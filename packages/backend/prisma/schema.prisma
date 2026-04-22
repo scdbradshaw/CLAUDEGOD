@@ -193,13 +193,11 @@ model Person {
   /// JSONB array of CriminalRecord objects
   criminal_record     Json   @default("[]")
 
-  // ── Stats 0-100 ──────────────────────────────────────────
-  health       Int @default(100) // 0-100
-  morality     Int @default(50) // 0-100
-  happiness    Int @default(50) // 0-100
-  reputation   Int @default(50) // 0-100
-  influence    Int @default(0) // 0-100
-  intelligence Int @default(50) // 0-100
+  // ── Vital ────────────────────────────────────────────────
+  /// Life/death indicator — synced from traits.health each tick.
+  /// 0 = dead; 1-100 = alive. Kept as a column so SQL WHERE health > 0
+  /// can use the index without parsing JSONB.
+  health Int @default(100) // 0-100
 
   // ── Other ────────────────────────────────────────────────
   physical_appearance String
@@ -316,7 +314,6 @@ model DeceasedPerson {
   cause                 String
   final_health          Int
   final_wealth          Float
-  final_happiness       Int
   peak_positive_outcome String?
   peak_negative_outcome String?
   died_at               DateTime @default(now())

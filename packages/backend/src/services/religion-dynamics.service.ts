@@ -6,7 +6,7 @@
 // this runs once per year at the boundary and lets people seek
 // out faith on their own when they're in a "doubt" state.
 //
-// Doubt signal: low happiness OR low faith.devotion. Non-members
+// Doubt signal: low faith.devotion. Non-members
 // in this state scan all active religions and join the one they
 // align best with, provided alignment ≥ CONVERSION_ALIGNMENT.
 //
@@ -34,8 +34,6 @@ const CONVERSION_ALIGNMENT = 0.85;
  *  civ-tier worlds (5000 souls) convert ≤100/year. */
 const CONVERSION_POOL_FRACTION = 0.02;
 const CONVERSION_HARD_CAP = 100;
-/** Happiness at/below this is a doubt signal. */
-const DOUBT_HAPPINESS_MAX = 40;
 /** faith.devotion at/below this is a doubt signal. */
 const DOUBT_FAITH_MAX = 30;
 
@@ -54,13 +52,12 @@ export interface ConversionRunResult {
  * Pick the subset of `snapshots` that qualifies as "in doubt". We cap at
  * CONVERSION_POOL_FRACTION of population (hard cap 100) to keep the cost
  * bounded at civ tier. Random sampling inside the doubt pool avoids the
- * same 100 unhappiest people converting year after year.
+ * same 100 lowest-devotion people converting year after year.
  */
 function selectDoubters(
   snapshots: PersonSnapshot[],
 ): PersonSnapshot[] {
   const doubters = snapshots.filter(p => {
-    if (p.happiness <= DOUBT_HAPPINESS_MAX) return true;
     const devotion = p.global_scores['faith.devotion'];
     return typeof devotion === 'number' && devotion <= DOUBT_FAITH_MAX;
   });

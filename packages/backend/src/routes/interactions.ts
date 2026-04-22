@@ -69,16 +69,15 @@ const router = Router();
 // ── Tick lock (Node is single-threaded, this is safe) ───────
 let tickRunning = false;
 
-/** Scalar 0-100 core stats that the engine is allowed to write to.
- *  Deltas targeting any key outside this set are silently dropped —
- *  this is the single point of "known stat" knowledge in the engine. */
-const WRITABLE_STATS = [
-  'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence',
-] as const;
-
 // Phase 1 tunables ────────────────────────────────────────────
 /** Antagonizer hybrid weight — 60% inner-circle picks, 40% random wild card. */
 const CONNECTION_PICK_PROB = 0.60;
+
+// Market tunables ─────────────────────────────────────────────
+const MARKET_CEILING       = 10.0;
+const MARKET_FLOOR         = 0.1;
+/** Fraction of the distance from current index to 1.0 pulled back each tick. */
+const MARKET_MEAN_REVERSION = 0.005;
 /** Cap on grudge-weighted score adjustment from accumulated memories
  *  between subject ↔ antagonist. Keeps one bad day from poisoning forever. */
 const MAX_GRUDGE_BONUS = 80;
@@ -177,26 +176,29 @@ function getEffects(band: OutcomeBand): {
   };
 }
 
-/** Apply one EffectPacket to a person's pending delta accumulator.
- *  Unknown stat/trait keys are silently tolerated — the persist step
- *  filters by the writable whitelist (stats) and by ALL_IDENTITY_KEYS (traits). */
+/**
+ * Apply one EffectPacket to the unified trait delta accumulator.
+ * Both `affects_stats` keys and `trait_deltas` keys target the `traits` JSONB —
+ * the distinction is how the magnitude is rolled (shared vs per-key).
+ * `health` is special: it's also a column, but the bulk-update SQL syncs it.
+ * Unknown keys are silently skipped at persist time.
+ */
 function applyEffectPacket(
-  statAcc:   Record<string, Record<string, number>>,
-  traitAcc:  Record<string, Record<string, number>>,
-  personId:  string,
-  packet:    EffectPacket,
+  traitAcc: Record<string, Record<string, number>>,
+  personId: string,
+  packet:   EffectPacket,
 ) {
   if (packet.affects_stats.length > 0) {
     const mag = randInt(packet.stat_delta[0], packet.stat_delta[1]);
-    statAcc[personId] ??= {};
-    for (const stat of packet.affects_stats) {
-      statAcc[personId][stat] = (statAcc[personId][stat] ?? 0) + mag;
+    traitAcc[personId] ??= {};
+    for (const key of packet.affects_stats) {
+      traitAcc[personId][key] = (traitAcc[personId][key] ?? 0) + mag;
     }
   }
   if (packet.trait_deltas) {
     traitAcc[personId] ??= {};
-    for (const [trait, d] of Object.entries(packet.trait_deltas)) {
-      traitAcc[personId][trait] = (traitAcc[personId][trait] ?? 0) + d;
+    for (const [key, d] of Object.entries(packet.trait_deltas)) {
+      traitAcc[personId][key] = (traitAcc[personId][key] ?? 0) + d;
     }
   }
 }
@@ -224,16 +226,12 @@ type LivingPerson = {
   id:    string;
   name:  string;
   age:   number;
-  death_age: number;
-  wealth: number;
-  traits: Prisma.JsonValue;
-  global_scores: Prisma.JsonValue;
-  health: number;
-  morality: number;
-  happiness: number;
-  reputation: number;
-  influence: number;
-  intelligence: number;
+  death_age:           number;
+  wealth:              number;
+  traits:              Prisma.JsonValue;
+  global_scores:       Prisma.JsonValue;
+  /** Life/death column — synced from traits.health. */
+  health:              number;
   relationship_status: string;
   criminal_record:     Prisma.JsonValue;
 };
@@ -306,16 +304,11 @@ function generateRandomPerson(worldTraits: Record<string, number> = {}) {
     race:                 RACES[randInt(0, RACES.length - 1)],
     occupation:           'commoner',
     age:                  0,
-    death_age:            randInt(55, 95),
+    death_age:            randInt(60, 95),
     relationship_status:  'Single',
     religion:             RELIGIONS[randInt(0, RELIGIONS.length - 1)],
     criminal_record:      [],
-    health:               100,
-    morality:             randInt(20, 80),
-    happiness:            randInt(30, 70),
-    reputation:           0,
-    influence:            0,
-    intelligence:         randInt(20, 80),
+    health:               traits['health'] ?? 100,
     physical_appearance:  'Newborn',
     wealth:               0,
     traits,
@@ -349,11 +342,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
       where: { world_id: world.id, health: { gt: 0 } },
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
-        traits: true, global_scores: true,
-        health: true, morality: true, happiness: true,
-        reputation: true, influence: true, intelligence: true,
-        // Phase 7 Wave 3 — agentic actions need these; cost is negligible
-        // vs the price of a second fetch per year boundary.
+        traits: true, global_scores: true, health: true,
+        // agentic turn reads relationship_status and criminal_record
         relationship_status: true, criminal_record: true,
       },
     }) as LivingPerson[];
@@ -399,16 +389,12 @@ router.post('/tick', async (_req: Request, res: Response) => {
         traits:        (p.traits        ?? {}) as Record<string, number>,
         global_scores: (p.global_scores ?? {}) as Record<string, number>,
         health:        p.health,
-        morality:      p.morality,
-        happiness:     p.happiness,
-        reputation:    p.reputation,
-        influence:     p.influence,
-        intelligence:  p.intelligence,
       });
     }
 
-    // 3. Run interactions — each person is protagonist once, picks via 60/40 hybrid
-    const statDeltas:  Record<string, Record<string, number>> = {};
+    // 3. Run interactions — each person is protagonist once, picks via 60/40 hybrid.
+    // All deltas (affects_stats + trait_deltas) go into a single traitDeltas map.
+    // The bulk-update SQL merges these into the traits JSONB and syncs the health column.
     const traitDeltas: Record<string, Record<string, number>> = {};
     const topScores:   Record<string, { protagonist_name: string; score: number; outcome: string }> = {};
     type PendingMemory = {
@@ -457,8 +443,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
 
       // Asymmetric outcomes — subject packet + antagonist packet
       const { subject, antagonist: antaPacket } = getEffects(band);
-      applyEffectPacket(statDeltas, traitDeltas, protagonist.id, subject);
-      applyEffectPacket(statDeltas, traitDeltas, antagonist.id,  antaPacket);
+      applyEffectPacket(traitDeltas, protagonist.id, subject);
+      applyEffectPacket(traitDeltas, antagonist.id,  antaPacket);
 
       // Queue memory if the band says so
       if (band.creates_memory) {
@@ -517,77 +503,55 @@ router.post('/tick', async (_req: Request, res: Response) => {
     // 4. Passive drifts (data-driven from ruleset, applied to everyone)
     const drifts = computePassiveDrifts(rules, globalTraits);
     for (const p of living) {
-      statDeltas[p.id] ??= {};
-      for (const [stat, d] of Object.entries(drifts)) {
-        statDeltas[p.id][stat] = (statDeltas[p.id][stat] ?? 0) + d;
+      traitDeltas[p.id] ??= {};
+      for (const [key, d] of Object.entries(drifts)) {
+        traitDeltas[p.id][key] = (traitDeltas[p.id][key] ?? 0) + d;
       }
     }
 
-    // 5. Apply all deltas — stats + traits via a single bulk UPDATE.
-    //    Each row shape: { id, health?, morality?, ..., traits? }. Keys
-    //    absent from the JSON fall back to the column's current value via
-    //    COALESCE, so we never overwrite a stat that didn't change. This
-    //    replaces the per-person tx.person.update loop (Phase 6 scale).
+    // 5. Apply all trait deltas — single bulk UPDATE per tick.
+    //    Every row: { id, traits: {merged}, health?: number (if traits.health changed) }
+    //    The SQL merges traits JSONB via || and syncs the health column.
     const finalHealth: Record<string, number> = {};
     const spawnResults: SpawnResult[] = [];
-    type BulkUpdateRow = {
-      id:           string;
-      health?:      number;
-      morality?:    number;
-      happiness?:   number;
-      reputation?:  number;
-      influence?:   number;
-      intelligence?: number;
-      traits?:      Record<string, number>;
-    };
+    type BulkUpdateRow = { id: string; traits: Record<string, number>; health?: number };
     const bulkUpdates: BulkUpdateRow[] = [];
 
     for (const p of living) {
-      const sd = statDeltas[p.id] ?? {};
       const td = traitDeltas[p.id] ?? {};
-      const row: BulkUpdateRow = { id: p.id };
-
-      for (const stat of WRITABLE_STATS) {
-        const delta = sd[stat];
-        if (delta === undefined || delta === 0) continue;
-        const cur  = (p as unknown as Record<string, number>)[stat] ?? 0;
-        (row as Record<string, unknown>)[stat] = Math.max(0, Math.min(100, cur + delta));
-      }
-
-      finalHealth[p.id] = (row.health as number | undefined) ?? p.health;
-
-      // Trait drifts (trauma/triumph modifiers) — clamp 0-100, ignore unknown keys
       const existingTraits = (p.traits ?? {}) as Record<string, number>;
-      let traitsChanged = false;
       const newTraits: Record<string, number> = { ...existingTraits };
-      for (const [trait, d] of Object.entries(td)) {
-        if (!ALL_IDENTITY_KEYS.includes(trait)) continue;
-        const cur = newTraits[trait] ?? 50;
-        const next = Math.max(0, Math.min(100, cur + d));
+      let changed = false;
+
+      for (const [key, delta] of Object.entries(td)) {
+        if (delta === 0) continue;
+        const cur  = newTraits[key] ?? 50;
+        const next = Math.max(0, Math.min(100, cur + delta));
         if (next !== cur) {
-          newTraits[trait] = next;
-          traitsChanged = true;
+          newTraits[key] = next;
+          changed = true;
         }
       }
-      if (traitsChanged) row.traits = newTraits;
 
-      // Only enqueue if something actually changed (more than just id).
-      if (Object.keys(row).length > 1) bulkUpdates.push(row);
+      if (changed) {
+        const row: BulkUpdateRow = { id: p.id, traits: newTraits };
+        // Sync health column if traits.health changed
+        if (td.health !== undefined) row.health = newTraits.health ?? p.health;
+        finalHealth[p.id] = row.health ?? p.health;
+        bulkUpdates.push(row);
+      } else {
+        finalHealth[p.id] = p.health;
+      }
     }
 
     await prisma.$transaction(async (tx) => {
       if (bulkUpdates.length > 0) {
-        // One round-trip for every person that moved, regardless of N.
+        // One round-trip regardless of N. Merges traits JSONB and optionally syncs health column.
         await tx.$executeRaw`
           UPDATE persons p SET
-            health       = COALESCE((u.updates->>'health')::int, p.health),
-            morality     = COALESCE((u.updates->>'morality')::int, p.morality),
-            happiness    = COALESCE((u.updates->>'happiness')::int, p.happiness),
-            reputation   = COALESCE((u.updates->>'reputation')::int, p.reputation),
-            influence    = COALESCE((u.updates->>'influence')::int, p.influence),
-            intelligence = COALESCE((u.updates->>'intelligence')::int, p.intelligence),
-            traits       = COALESCE((u.updates->'traits')::jsonb, p.traits),
-            updated_at   = NOW()
+            traits     = p.traits || (u.updates->'traits')::jsonb,
+            health     = COALESCE((u.updates->>'health')::int, p.health),
+            updated_at = NOW()
           FROM jsonb_array_elements(${JSON.stringify(bulkUpdates)}::jsonb) AS u(updates)
           WHERE p.id = (u.updates->>'id')::uuid
         `;
@@ -686,14 +650,13 @@ router.post('/tick', async (_req: Request, res: Response) => {
           if (inh.heirs.length > 0) inheritances.push(inh);
           await tx.deceasedPerson.create({
             data: {
-              name:           p.name,
-              age_at_death:   p.age,
-              world_year:     world.current_year,
-              cause:          'interaction',
-              final_health:   0,
-              final_wealth:   p.wealth,
-              final_happiness: p.happiness,
-              world_id:       world.id,
+              name:         p.name,
+              age_at_death: p.age,
+              world_year:   world.current_year,
+              cause:        'interaction',
+              final_health: 0,
+              final_wealth: p.wealth,
+              world_id:     world.id,
             },
           });
           await tx.person.delete({ where: { id: p.id } });
@@ -720,8 +683,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
 
       // Natural deaths (reached death_age)
       const naturallyDying = await prisma.$queryRaw<
-        Array<{ id: string; name: string; age: number; wealth: number; happiness: number }>
-      >`SELECT id, name, age, wealth, happiness FROM persons WHERE world_id = ${world.id}::uuid AND age >= death_age AND health > 0`;
+        Array<{ id: string; name: string; age: number; wealth: number }>
+      >`SELECT id, name, age, wealth FROM persons WHERE world_id = ${world.id}::uuid AND age >= death_age AND health > 0`;
 
       for (const dead of naturallyDying) {
         await prisma.$transaction(async (tx) => {
@@ -732,14 +695,13 @@ router.post('/tick', async (_req: Request, res: Response) => {
           if (inh.heirs.length > 0) inheritances.push(inh);
           await tx.deceasedPerson.create({
             data: {
-              name:            dead.name,
-              age_at_death:    dead.age,
-              world_year:      newYear,
-              cause:           'old_age',
-              final_health:    0,
-              final_wealth:    dead.wealth,
-              final_happiness: dead.happiness,
-              world_id:        world.id,
+              name:         dead.name,
+              age_at_death: dead.age,
+              world_year:   newYear,
+              cause:        'old_age',
+              final_health: 0,
+              final_wealth: dead.wealth,
+              world_id:     world.id,
             },
           });
           await tx.person.delete({ where: { id: dead.id } });
@@ -795,19 +757,29 @@ router.post('/tick', async (_req: Request, res: Response) => {
       const agentSnapshots: AgentPersonSnapshot[] = living
         .filter(p => !alreadyDead.has(p.id))
         .map(p => ({
-          id:        p.id,
-          name:      p.name,
-          age:       p.age + 1, // post-aging, since we just advanced years
-          morality:  p.morality,
-          influence: p.influence,
-          happiness: p.happiness,
-          wealth:    p.wealth,
+          id:     p.id,
+          name:   p.name,
+          age:    p.age + 1, // post-aging, since we just advanced years
+          traits: (p.traits ?? {}) as Record<string, number>,
+          wealth: p.wealth,
           relationship_status: p.relationship_status,
           criminal_record:     (p.criminal_record as unknown as CriminalRecord[]) ?? [],
         }));
 
+      // Rebuild linksOf from DB so agentic turn plans off post-interaction state.
+      const postInteractionLinks = await prisma.innerCircleLink.findMany({
+        where:  { owner_id: { in: agentSnapshots.map(a => a.id) } },
+        select: { owner_id: true, target_id: true, bond_strength: true, relation_type: true },
+      });
+      const agentLinksOf = new Map<string, OwnedEdge[]>();
+      for (const l of postInteractionLinks) {
+        const arr = agentLinksOf.get(l.owner_id) ?? [];
+        arr.push({ target_id: l.target_id, bond_strength: l.bond_strength, relation_type: l.relation_type as OwnedEdge['relation_type'] });
+        agentLinksOf.set(l.owner_id, arr);
+      }
+
       const agenticResult = await prisma.$transaction(async (tx) =>
-        runAgenticTurn(tx, agentSnapshots, linksOf, newYear, world.id),
+        runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, world.id),
       );
       agenticActions = agenticResult.actions;
       religionDissolves.push(...agenticResult.religion_dissolves);
@@ -850,10 +822,12 @@ router.post('/tick', async (_req: Request, res: Response) => {
       });
     }
 
-    // 9. Market engine
-    const noise        = randFloat(-world.market_volatility, world.market_volatility);
-    const marketReturn = world.market_trend + noise;
-    const newMarketIdx = Math.max(1.0, world.market_index * (1 + marketReturn));
+    // 9. Market engine — drift + mean-reversion + ceiling/floor
+    const noise             = randFloat(-world.market_volatility, world.market_volatility);
+    const meanReversionPull = (1.0 - world.market_index) * MARKET_MEAN_REVERSION;
+    const marketReturn      = world.market_trend + noise + meanReversionPull;
+    const rawMarketIdx      = world.market_index * (1 + marketReturn);
+    const newMarketIdx      = Math.min(MARKET_CEILING, Math.max(MARKET_FLOOR, rawMarketIdx));
 
     // Wealth drift proportional to market return
     if (Math.abs(marketReturn) > 0.0005) {
@@ -1014,18 +988,14 @@ router.post('/force', async (req: Request, res: Response) => {
       where: { id: subject_id },
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
-        traits: true, global_scores: true,
-        health: true, morality: true, happiness: true,
-        reputation: true, influence: true, intelligence: true,
+        traits: true, global_scores: true, health: true,
       },
     }),
     prisma.person.findUnique({
       where: { id: antagonist_id },
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
-        traits: true, global_scores: true,
-        health: true, morality: true, happiness: true,
-        reputation: true, influence: true, intelligence: true,
+        traits: true, global_scores: true, health: true,
       },
     }),
   ]);
@@ -1060,42 +1030,39 @@ router.post('/force', async (req: Request, res: Response) => {
   const score         = computeScore(iType, subjectTraits, globalTraits, traitMults, grudgeBonus);
   const band          = findBand(score, rules.outcome_bands);
 
-  // Effects
-  const statDeltas:  Record<string, Record<string, number>> = {};
+  // Effects — unified traitDeltas accumulator
   const traitDeltas: Record<string, Record<string, number>> = {};
   const { subject: subjectPacket, antagonist: antaPacket } = getEffects(band);
-  applyEffectPacket(statDeltas, traitDeltas, subject.id,    subjectPacket);
-  applyEffectPacket(statDeltas, traitDeltas, antagonist.id, antaPacket);
+  applyEffectPacket(traitDeltas, subject.id,    subjectPacket);
+  applyEffectPacket(traitDeltas, antagonist.id, antaPacket);
 
   // Persist delta + memory in one transaction
-  const summary     = `Forced: ${iType.label} between ${subject.name} and ${antagonist.name} — ${band.label} (${score})`;
-  const emotional   = emotionalImpactForMagnitude(score, band.magnitude ?? 0.5);
-  const magnitude   = band.magnitude ?? 0.5;
+  const summary   = `Forced: ${iType.label} between ${subject.name} and ${antagonist.name} — ${band.label} (${score})`;
+  const emotional = emotionalImpactForMagnitude(score, band.magnitude ?? 0.5);
+  const magnitude = band.magnitude ?? 0.5;
 
   await prisma.$transaction(async (tx) => {
-    for (const [pid, sd] of Object.entries(statDeltas)) {
+    for (const [pid, td] of Object.entries(traitDeltas)) {
       const person = pid === subject.id ? subject : antagonist;
-      const updateData: Record<string, unknown> = {};
-
-      for (const stat of WRITABLE_STATS) {
-        const delta = sd[stat];
-        if (delta === undefined || delta === 0) continue;
-        const cur = (person as unknown as Record<string, number>)[stat] ?? 0;
-        updateData[stat] = Math.max(0, Math.min(100, cur + delta));
-      }
-
-      // Trait deltas
-      const td = traitDeltas[pid] ?? {};
       const existingTraits = (person.traits ?? {}) as Record<string, number>;
       const newTraits: Record<string, number> = { ...existingTraits };
       let traitsChanged = false;
+      let newHealth: number | undefined;
+
       for (const [trait, d] of Object.entries(td)) {
+        if (trait === 'health') {
+          newHealth = Math.max(0, Math.min(100, (person.health ?? 100) + d));
+          continue;
+        }
         if (!ALL_IDENTITY_KEYS.includes(trait)) continue;
         const cur  = newTraits[trait] ?? 50;
         const next = Math.max(0, Math.min(100, cur + d));
         if (next !== cur) { newTraits[trait] = next; traitsChanged = true; }
       }
+
+      const updateData: Record<string, unknown> = {};
       if (traitsChanged) updateData.traits = newTraits as unknown as Prisma.InputJsonValue;
+      if (newHealth !== undefined) updateData.health = newHealth;
 
       if (Object.keys(updateData).length > 0) {
         await tx.person.update({ where: { id: pid }, data: updateData });
@@ -1143,8 +1110,8 @@ router.post('/force', async (req: Request, res: Response) => {
     outcome:            band.label,
     magnitude,
     creates_memory:     band.creates_memory,
-    subject_stats_changed:    statDeltas[subject.id] ?? {},
-    antagonist_stats_changed: statDeltas[antagonist.id] ?? {},
+    subject_traits_changed:    traitDeltas[subject.id] ?? {},
+    antagonist_traits_changed: traitDeltas[antagonist.id] ?? {},
   });
 });
 

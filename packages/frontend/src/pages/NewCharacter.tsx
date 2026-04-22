@@ -23,11 +23,6 @@ interface FormState {
   physical_appearance: string;
   wealth:              number;
   health:              number;
-  morality:            number;
-  happiness:           number;
-  reputation:          number;
-  influence:           number;
-  intelligence:        number;
 }
 
 type FormAction =
@@ -52,35 +47,25 @@ const HALFLING     = ['Barlo','Cob','Finwick','Merry','Pip','Rolo','Tob','Wendel
 const TIEFLING     = ['Ash','Cinder','Dusk','Ember','Hex','Morrow','Ruin','Sable','Torment','Vex'];
 const SURNAMES     = ['Ashveil','Blackthorn','Coldwater','Duskmantle','Emberholt','Frostwick','Greystone','Hawkmere','Ironwood','Jadepeak','Kessler','Lightbane','Merrow','Nighthollow','Oakhaven','Pinecroft','Redmane','Stormgate','Thornbury','Underhill','Valdris','Whitlock','Yarwick','Zephyrcross'];
 
-const ARCHETYPES: Record<string, { statBias: Partial<Record<string,number>>; wealthMin: number; wealthMax: number; ageMin: number; ageMax: number }> = {
-  noble:    { statBias: { reputation: 20, influence: 25 },                wealthMin: 80_000,  wealthMax: 600_000, ageMin: 20, ageMax: 65 },
-  merchant: { statBias: { intelligence: 15, influence: 10 },              wealthMin: 10_000,  wealthMax: 200_000, ageMin: 25, ageMax: 60 },
-  soldier:  { statBias: { health: 20, reputation: 5 },                    wealthMin: 500,     wealthMax: 5_000,   ageMin: 18, ageMax: 45 },
-  criminal: { statBias: { morality: -30, influence: 10, happiness: -10 }, wealthMin: 200,     wealthMax: 15_000,  ageMin: 16, ageMax: 50 },
-  scholar:  { statBias: { intelligence: 25, influence: 5 },               wealthMin: 1_000,   wealthMax: 8_000,   ageMin: 22, ageMax: 70 },
-  priest:   { statBias: { morality: 20, reputation: 10, happiness: 10 },  wealthMin: 300,     wealthMax: 4_000,   ageMin: 25, ageMax: 75 },
-  farmer:   { statBias: { health: 10, happiness: 5, morality: 5 },        wealthMin: 50,      wealthMax: 2_000,   ageMin: 16, ageMax: 70 },
-  wanderer: { statBias: { happiness: -5, intelligence: 5 },               wealthMin: 0,       wealthMax: 500,     ageMin: 16, ageMax: 60 },
-  artisan:  { statBias: { reputation: 10, happiness: 10 },                wealthMin: 1_000,   wealthMax: 12_000,  ageMin: 20, ageMax: 65 },
-  elder:    { statBias: { intelligence: 10, reputation: 15, health: -15 },wealthMin: 2_000,   wealthMax: 30_000,  ageMin: 60, ageMax: 90 },
+const ARCHETYPES: Record<string, { healthBias: number; wealthMin: number; wealthMax: number; ageMin: number; ageMax: number }> = {
+  noble:    { healthBias:  0, wealthMin: 80_000,  wealthMax: 600_000, ageMin: 20, ageMax: 65 },
+  merchant: { healthBias:  0, wealthMin: 10_000,  wealthMax: 200_000, ageMin: 25, ageMax: 60 },
+  soldier:  { healthBias: 15, wealthMin: 500,     wealthMax: 5_000,   ageMin: 18, ageMax: 45 },
+  criminal: { healthBias:  0, wealthMin: 200,     wealthMax: 15_000,  ageMin: 16, ageMax: 50 },
+  scholar:  { healthBias:  0, wealthMin: 1_000,   wealthMax: 8_000,   ageMin: 22, ageMax: 70 },
+  priest:   { healthBias:  0, wealthMin: 300,     wealthMax: 4_000,   ageMin: 25, ageMax: 75 },
+  farmer:   { healthBias: 10, wealthMin: 50,      wealthMax: 2_000,   ageMin: 16, ageMax: 70 },
+  wanderer: { healthBias:  0, wealthMin: 0,       wealthMax: 500,     ageMin: 16, ageMax: 60 },
+  artisan:  { healthBias:  0, wealthMin: 1_000,   wealthMax: 12_000,  ageMin: 20, ageMax: 65 },
+  elder:    { healthBias:-15, wealthMin: 2_000,   wealthMax: 30_000,  ageMin: 60, ageMax: 90 },
 };
 
 function rnd(min: number, max: number) { return Math.floor(Math.random() * (max - min + 1)) + min; }
 function pick<T>(arr: T[]): T { return arr[Math.floor(Math.random() * arr.length)]; }
 function clamp(n: number) { return Math.max(0, Math.min(100, n)); }
 
-function getLifespan(race: string) {
-  switch (race) {
-    case 'Elf': return rnd(250, 700);
-    case 'Dwarf': return rnd(150, 300);
-    case 'Halfling': return rnd(80, 130);
-    case 'Gnome': return rnd(100, 200);
-    case 'Orc': return rnd(40, 70);
-    case 'Half-Orc': return rnd(60, 90);
-    case 'Tiefling': return rnd(90, 120);
-    default: return rnd(65, 90);
-  }
-}
+// v1 design: all races use the same 60-95 year lifespan
+function getLifespan(_race: string) { return rnd(60, 95); }
 
 function getName(race: string, gender: string) {
   const isFemale = gender === 'Female';
@@ -118,13 +103,12 @@ function getAppearance(race: string, gender: string, age: number) {
 }
 
 function buildRandom(preset?: string): FormState {
-  const arch     = preset ? ARCHETYPES[preset] : pick(Object.values(ARCHETYPES));
-  const archlabel= preset ?? pick(Object.keys(ARCHETYPES));
-  const race     = pick(RACES);
-  const gender   = pick(GENDERS);
+  const arch      = preset ? ARCHETYPES[preset] : pick(Object.values(ARCHETYPES));
+  const archlabel = preset ?? pick(Object.keys(ARCHETYPES));
+  const race      = pick(RACES);
+  const gender    = pick(GENDERS);
   const death_age = getLifespan(race);
-  const age      = Math.min(rnd(arch.ageMin, arch.ageMax), death_age - 1);
-  const stat     = (key: string, b: number) => clamp(b + (arch.statBias[key] ?? 0));
+  const age       = Math.min(rnd(arch.ageMin, arch.ageMax), death_age - 1);
 
   return {
     name:                getName(race, gender),
@@ -138,20 +122,14 @@ function buildRandom(preset?: string): FormState {
     relationship_status: pick(RELATIONSHIPS),
     physical_appearance: getAppearance(race, gender, age),
     wealth:              parseFloat((Math.random() * (arch.wealthMax - arch.wealthMin) + arch.wealthMin).toFixed(2)),
-    health:              stat('health',       rnd(30, 70)),
-    morality:            stat('morality',     rnd(30, 70)),
-    happiness:           stat('happiness',    rnd(30, 70)),
-    reputation:          stat('reputation',   rnd(30, 70)),
-    influence:           stat('influence',    rnd(30, 70)),
-    intelligence:        stat('intelligence', rnd(30, 70)),
+    health:              clamp(rnd(30, 70) + arch.healthBias),
   };
 }
 
 const BLANK: FormState = {
   name: '', gender: '', race: '', occupation: 'commoner', sexuality: Sexuality.HETEROSEXUAL,
   age: 25, death_age: 80, religion: '', relationship_status: '',
-  physical_appearance: '', wealth: 0,
-  health: 100, morality: 50, happiness: 50, reputation: 50, influence: 0, intelligence: 50,
+  physical_appearance: '', wealth: 0, health: 100,
 };
 
 function reducer(state: FormState, action: FormAction): FormState {
@@ -318,15 +296,11 @@ export default function NewCharacter() {
 
         {/* Core Stats */}
         <div className="panel p-5 space-y-4">
-          <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest">Core Stats</h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-5">
-            <StatSlider label="Health"       value={form.health}       onChange={v => dispatch({ type: 'SET', field: 'health',       value: v })} />
-            <StatSlider label="Happiness"    value={form.happiness}    onChange={v => dispatch({ type: 'SET', field: 'happiness',    value: v })} />
-            <StatSlider label="Morality"     value={form.morality}     onChange={v => dispatch({ type: 'SET', field: 'morality',     value: v })} />
-            <StatSlider label="Reputation"   value={form.reputation}   onChange={v => dispatch({ type: 'SET', field: 'reputation',   value: v })} />
-            <StatSlider label="Influence"    value={form.influence}    onChange={v => dispatch({ type: 'SET', field: 'influence',    value: v })} />
-            <StatSlider label="Intelligence" value={form.intelligence} onChange={v => dispatch({ type: 'SET', field: 'intelligence', value: v })} />
-          </div>
+          <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest">Vital</h2>
+          <StatSlider label="Health" value={form.health} onChange={v => dispatch({ type: 'SET', field: 'health', value: v })} />
+          <p className="text-[10px] text-zinc-600">
+            Identity traits (25 attributes) are generated from archetype when this character is summoned.
+          </p>
         </div>
 
         {/* Actions */}

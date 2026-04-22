@@ -7,10 +7,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import type { EmotionalImpact, PersonDelta } from '@civ-sim/shared';
 import { api } from '../api/client';
 
-const NUMERIC_STATS = [
-  'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence',
-  'age', 'death_age', 'wealth',
-] as const;
+const NUMERIC_STATS = ['health', 'age', 'death_age', 'wealth'] as const;
 
 type NumericStat = typeof NUMERIC_STATS[number];
 
@@ -22,7 +19,7 @@ export default function GodModePanel({ personId }: Props) {
   const qc = useQueryClient();
 
   const [mode, setMode]                   = useState<'god' | 'sim'>('god');
-  const [stat, setStat]                   = useState<NumericStat>('happiness');
+  const [stat, setStat]                   = useState<NumericStat>('health');
   const [value, setValue]                 = useState('');
   const [summary, setSummary]             = useState('');
   const [impact, setImpact]               = useState<EmotionalImpact>('neutral');

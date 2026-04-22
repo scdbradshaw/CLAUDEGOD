@@ -37,22 +37,17 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'apply_delta',
-    description: 'Apply stat changes to a character with a narrative description. Use this to change health, happiness, wealth, morality, reputation, influence, intelligence, age, occupation, relationship_status, religion, physical_appearance, sexuality, or death_age.',
+    description: 'Apply stat changes to a character with a narrative description. Use this to change health, wealth, age, occupation, relationship_status, religion, physical_appearance, sexuality, or death_age. To change identity traits (charisma, leadership, honesty, resilience, etc.) prefix the key with "trait." e.g. "trait.charisma".',
     input_schema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'Character UUID' },
         delta: {
           type: 'object',
-          description: 'Fields to update and their new values',
+          description: 'Fields to update and their new values. Scalar columns: health, wealth, age, death_age. String columns: occupation, relationship_status, religion, physical_appearance. Identity traits: use "trait.<key>" e.g. "trait.charisma".',
           properties: {
             health:              { type: 'number' },
-            happiness:           { type: 'number' },
             wealth:              { type: 'number' },
-            morality:            { type: 'number' },
-            reputation:          { type: 'number' },
-            influence:           { type: 'number' },
-            intelligence:        { type: 'number' },
             age:                 { type: 'number' },
             occupation:          { type: 'string' },
             death_age:           { type: 'number' },
@@ -111,11 +106,6 @@ const tools: Anthropic.Tool[] = [
         relationship_status: { type: 'string' },
         religion:            { type: 'string' },
         health:              { type: 'number' },
-        morality:            { type: 'number' },
-        happiness:           { type: 'number' },
-        reputation:          { type: 'number' },
-        influence:           { type: 'number' },
-        intelligence:        { type: 'number' },
         physical_appearance: { type: 'string' },
         wealth:              { type: 'number' },
       },
@@ -140,7 +130,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
     switch (name) {
       case 'list_characters': {
         const chars = await prisma.person.findMany({
-          select: { id: true, name: true, age: true, health: true, happiness: true, wealth: true },
+          select: { id: true, name: true, age: true, health: true, wealth: true },
           orderBy: { name: 'asc' },
         });
         return JSON.stringify(chars, null, 2);

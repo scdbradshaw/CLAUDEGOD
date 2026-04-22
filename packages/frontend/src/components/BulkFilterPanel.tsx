@@ -9,7 +9,7 @@ import { api } from '../api/client';
 
 // ── Constants ─────────────────────────────────────────────────
 
-const SCALAR_NUMERIC = ['age', 'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence', 'wealth'] as const;
+const SCALAR_NUMERIC = ['age', 'health', 'wealth'] as const;
 const SCALAR_STRING  = ['race', 'occupation', 'religion', 'gender'] as const;
 const NUMERIC_OPS    = ['lt', 'lte', 'gt', 'gte', 'between'] as const;
 const STRING_OPS     = ['eq', 'in'] as const;

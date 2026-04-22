@@ -51,13 +51,11 @@ const MURDER_MORALITY_MAX = 25; // callous agent only
 // ── Types ───────────────────────────────────────────────────
 
 export interface AgentPersonSnapshot {
-  id:         string;
-  name:       string;
-  age:        number;
-  morality:   number;
-  influence:  number;
-  happiness:  number;
-  wealth:     number;
+  id:     string;
+  name:   string;
+  age:    number;
+  traits: Record<string, number>;
+  wealth: number;
   relationship_status: string;
   criminal_record: CriminalRecord[];
 }
@@ -111,8 +109,8 @@ export function selectAgents(
         (m, e) => Math.max(m, Math.abs(e.bond_strength - 50)),
         0,
       );
-      const moralDev = Math.abs(p.morality - 50);
-      const score = p.influence + moralDev * 2 + maxBondDev * 2;
+      const honestyDev = Math.abs((p.traits['honesty'] ?? 50) - 50);
+      const score = (p.traits['leadership'] ?? 50) + honestyDev * 2 + maxBondDev * 2;
       return { person: p, score };
     });
 
@@ -146,8 +144,8 @@ export function pickActionFor(
   const live = edges.filter(e => byId.has(e.target_id));
   if (live.length === 0) return null;
 
-  // Murder — low-morality agent, intense enmity target.
-  if (agent.morality <= MURDER_MORALITY_MAX) {
+  // Murder — low-honesty agent, intense enmity target.
+  if ((agent.traits['honesty'] ?? 50) <= MURDER_MORALITY_MAX) {
     const victim = live
       .filter(e => e.relation_type === 'enemy' && e.bond_strength <= MURDER_BOND_MAX)
       .sort((a, b) => a.bond_strength - b.bond_strength)[0];
@@ -171,7 +169,7 @@ export function pickActionFor(
   const traitor = live
     .filter(e => e.relation_type === 'close_friend' && e.bond_strength >= BETRAY_BOND_MIN)
     .sort((a, b) => b.bond_strength - a.bond_strength)[0];
-  if (traitor && (agent.morality <= 40 || Math.random() < 0.3)) {
+  if (traitor && ((agent.traits['honesty'] ?? 50) <= 40 || Math.random() < 0.3)) {
     return { kind: 'betray', target: traitor };
   }
 
@@ -213,12 +211,8 @@ export async function executeActions(
   // Status + stat updates batched as separate UPDATEs for clarity — the
   // counts here are small (K ≤ 100) so a bulk-SQL path isn't worth it.
   const statusUpdates: { id: string; status: string }[] = [];
-  const happinessBumps: Map<string, number> = new Map();
   const criminalRecordAdds: Map<string, CriminalRecord> = new Map();
   const pendingKills: { agentId: string; victim: AgentPersonSnapshot }[] = [];
-
-  const bumpHappiness = (id: string, delta: number) =>
-    happinessBumps.set(id, (happinessBumps.get(id) ?? 0) + delta);
 
   for (const agent of agents) {
     const plan = plans.get(agent.id);
@@ -242,8 +236,6 @@ export async function executeActions(
         memories.push(makeMemory(target.id, agent.id,
           `${agent.name} reached out in friendship.`,
           'positive', 0.4, target.age, worldYear));
-        bumpHappiness(agent.id, 3);
-        bumpHappiness(target.id, 2);
         logs.push(log('befriend', agent, target, false));
         break;
       }
@@ -267,8 +259,6 @@ export async function executeActions(
         memories.push(makeMemory(target.id, agent.id,
           `${agent.name}'s betrayal shattered their trust.`,
           'traumatic', 0.9, target.age, worldYear));
-        bumpHappiness(agent.id, -5);
-        bumpHappiness(target.id, -12);
         logs.push(log('betray', agent, target, false));
         break;
       }
@@ -290,11 +280,6 @@ export async function executeActions(
         memories.push(makeMemory(target.id, agent.id,
           `Married ${agent.name}.`,
           'euphoric', 0.9, target.age, worldYear, 'marriage'));
-        bumpHappiness(agent.id, 15);
-        bumpHappiness(target.id, 15);
-        // Mirror local snapshot so a later planner in the same batch sees it.
-        agent.relationship_status = 'Married';
-        target.relationship_status = 'Married';
         logs.push(log('marry', agent, target, false));
         break;
       }
@@ -315,7 +300,6 @@ export async function executeActions(
           'traumatic', 1.0, agent.age, worldYear, 'crime'));
         // Target dies — no memory written for them (their memory rows
         // cascade on delete anyway).
-        bumpHappiness(agent.id, -15);
         logs.push(log('murder', agent, target, true));
         break;
       }
@@ -331,14 +315,6 @@ export async function executeActions(
       where: { id: s.id },
       data:  { relationship_status: s.status },
     });
-  }
-
-  for (const [id, delta] of happinessBumps) {
-    if (delta === 0) continue;
-    await tx.$executeRaw`
-      UPDATE persons SET happiness = GREATEST(0, LEAST(100, happiness + ${delta})), updated_at = NOW()
-      WHERE id = ${id}::uuid
-    `;
   }
 
   for (const [agentId, rec] of criminalRecordAdds) {
@@ -360,14 +336,13 @@ export async function executeActions(
     if (inh.heirs.length > 0) inheritances.push(inh);
     await tx.deceasedPerson.create({
       data: {
-        name:            k.victim.name,
-        age_at_death:    k.victim.age,
-        world_year:      worldYear,
-        cause:           'interaction',
-        final_health:    0,
-        final_wealth:    k.victim.wealth,
-        final_happiness: k.victim.happiness,
-        world_id:        worldId,
+        name:         k.victim.name,
+        age_at_death: k.victim.age,
+        world_year:   worldYear,
+        cause:        'interaction',
+        final_health: 0,
+        final_wealth: k.victim.wealth,
+        world_id:     worldId,
       },
     });
     await tx.person.delete({ where: { id: k.victim.id } });

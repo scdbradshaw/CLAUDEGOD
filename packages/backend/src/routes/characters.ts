@@ -39,7 +39,6 @@ router.get('/', async (req: Request, res: Response) => {
         name:          true,
         age:           true,
         health:        true,
-        happiness:     true,
         wealth:        true,
         updated_at:    true,
         global_scores: true,
@@ -68,7 +67,7 @@ router.get('/', async (req: Request, res: Response) => {
 //   religions = csv                          (match any)
 //   factions  = csv of faction UUIDs         (active memberships only)
 //   q         = name substring (case-insensitive)
-//   sort      = name|age|morality|wealth|influence|health|updated_at
+//   sort      = name|age|wealth|health|updated_at
 //   order     = asc|desc                     (default desc for updated_at, else asc)
 //   page, limit                              (limit capped at 200)
 router.get('/search', async (req: Request, res: Response) => {
@@ -92,9 +91,7 @@ router.get('/search', async (req: Request, res: Response) => {
   const SORT_FIELD_MAP: Record<string, keyof Prisma.PersonOrderByWithRelationInput> = {
     name:       'name',
     age:        'age',
-    morality:   'morality',
     wealth:     'wealth',
-    influence:  'influence',
     health:     'health',
     updated_at: 'updated_at',
   };
@@ -129,10 +126,8 @@ router.get('/search', async (req: Request, res: Response) => {
         race:          true,
         religion:      true,
         health:        true,
-        morality:      true,
-        happiness:     true,
-        influence:     true,
         wealth:        true,
+        traits:        true,
         updated_at:    true,
         global_scores: true,
         faction_memberships: {

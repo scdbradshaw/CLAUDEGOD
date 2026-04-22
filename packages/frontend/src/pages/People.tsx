@@ -26,8 +26,6 @@ const SORT_OPTIONS: { value: PeopleSortField; label: string }[] = [
   { value: 'age',        label: 'Age'               },
   { value: 'health',     label: 'Health'            },
   { value: 'wealth',     label: 'Wealth'            },
-  { value: 'morality',   label: 'Morality'          },
-  { value: 'influence',  label: 'Influence'         },
 ];
 
 const STATUS_OPTIONS: { value: PeopleStatus; label: string }[] = [
@@ -37,13 +35,6 @@ const STATUS_OPTIONS: { value: PeopleStatus; label: string }[] = [
 ];
 
 // ── Helpers ─────────────────────────────────────────────────
-
-function moralityDotColor(m: number): string {
-  if (m >= 70) return 'bg-emerald-400';
-  if (m >= 40) return 'bg-zinc-400';
-  if (m >= 20) return 'bg-amber-400';
-  return 'bg-red-500';
-}
 
 function healthColor(h: number): string {
   if (h === 0)   return 'bg-zinc-700';
@@ -76,8 +67,8 @@ function PersonCard({ p }: { p: PeopleListItem }) {
           </p>
         </div>
         <span
-          className={`shrink-0 w-2 h-2 rounded-full mt-1 ${moralityDotColor(p.morality)}`}
-          title={`Morality ${p.morality}`}
+          className={`shrink-0 w-2 h-2 rounded-full mt-1 ${healthColor(p.health)}`}
+          title={`Health ${p.health}`}
         />
       </div>
 
@@ -101,7 +92,9 @@ function PersonCard({ p }: { p: PeopleListItem }) {
 
       {/* Signature stat strip */}
       <div className="mt-2 pt-2 border-t border-border/60 flex items-center justify-between text-[10px]">
-        <span className="text-muted">Influence <span className="text-zinc-300">{p.influence}</span></span>
+        <span className="text-muted">
+          Leadership <span className="text-zinc-300">{(p.traits as Record<string, number>)?.['leadership'] ?? '—'}</span>
+        </span>
         <span className="text-gold">{wealthStr(p.wealth)}</span>
       </div>
     </Link>

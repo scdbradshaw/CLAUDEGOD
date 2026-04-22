@@ -44,14 +44,10 @@ function RipCard({ person }: { person: DeceasedPerson }) {
         <span className="text-lg opacity-40">✝</span>
       </div>
 
-      <div className="grid grid-cols-3 gap-2 text-[10px] text-zinc-500">
+      <div className="grid grid-cols-2 gap-2 text-[10px] text-zinc-500">
         <div>
           <span className="block text-zinc-700 mb-0.5">Final Health</span>
           <span className="text-red-500 font-medium">{person.final_health}</span>
-        </div>
-        <div>
-          <span className="block text-zinc-700 mb-0.5">Happiness</span>
-          <span className="text-zinc-400 font-medium">{person.final_happiness}</span>
         </div>
         <div>
           <span className="block text-zinc-700 mb-0.5">Wealth</span>

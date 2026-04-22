@@ -9,7 +9,7 @@ import StatBar, { statTextColor } from '../components/StatBar';
 import MemoryBankPanel from '../components/MemoryBankPanel';
 import GodModePanel    from '../components/GodModePanel';
 import type { CriminalRecord } from '@civ-sim/shared';
-import { GLOBAL_TRAITS } from '@civ-sim/shared';
+import { GLOBAL_TRAITS, IDENTITY_ATTRIBUTES } from '@civ-sim/shared';
 
 // Phase 7 Wave 2 — relation kind → display label + tag color.
 const RELATION_META: Record<RelationshipKind, { label: string; tag: string }> = {
@@ -23,13 +23,13 @@ const RELATION_META: Record<RelationshipKind, { label: string; tag: string }> = 
   enemy:        { label: 'Enemy',        tag: 'bg-red-900/50 text-red-300'       },
 };
 
-const STATS: { label: string; key: string }[] = [
-  { label: 'Health',       key: 'health'       },
-  { label: 'Happiness',    key: 'happiness'     },
-  { label: 'Morality',     key: 'morality'      },
-  { label: 'Reputation',   key: 'reputation'    },
-  { label: 'Influence',    key: 'influence'     },
-  { label: 'Intelligence', key: 'intelligence'  },
+// 25 identity attribute categories grouped for display.
+const TRAIT_CATEGORIES: { label: string; color: string; keys: readonly string[] }[] = [
+  { label: 'Physical', color: 'text-red-400',     keys: IDENTITY_ATTRIBUTES.physical },
+  { label: 'Mental',   color: 'text-sky-400',     keys: IDENTITY_ATTRIBUTES.mental   },
+  { label: 'Social',   color: 'text-emerald-400', keys: IDENTITY_ATTRIBUTES.social   },
+  { label: 'Drive',    color: 'text-amber-400',   keys: IDENTITY_ATTRIBUTES.drive    },
+  { label: 'Skills',   color: 'text-violet-400',  keys: IDENTITY_ATTRIBUTES.skills   },
 ];
 
 const FORCE_CONFIG: { key: string; label: string; color: string }[] = [
@@ -134,18 +134,36 @@ export default function CharacterDetail() {
             </div>
           </div>
 
-          {/* Stat bars */}
-          <div className="panel p-4">
-            <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest mb-3">Core Stats</h2>
-            <div className="space-y-2">
-              {STATS.map(({ label, key }) => (
-                <StatBar
-                  key={key}
-                  label={label}
-                  value={(person as unknown as Record<string, unknown>)[key] as number}
-                />
-              ))}
+          {/* Vital stat + Trait categories */}
+          <div className="panel p-4 space-y-4">
+            <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest">Identity Attributes</h2>
+
+            {/* Health (column, not trait) */}
+            <div>
+              <span className="text-[10px] text-red-400 uppercase tracking-widest font-semibold">Vital</span>
+              <div className="mt-2">
+                <StatBar label="Health" value={person.health} />
+              </div>
             </div>
+
+            {/* 5 trait categories */}
+            {TRAIT_CATEGORIES.map(({ label, color, keys }) => {
+              const traits = (person.traits ?? {}) as Record<string, number>;
+              return (
+                <div key={label}>
+                  <span className={`text-[10px] uppercase tracking-widest font-semibold ${color}`}>{label}</span>
+                  <div className="mt-2 space-y-1.5">
+                    {keys.map(k => (
+                      <StatBar
+                        key={k}
+                        label={k.replace(/_/g, ' ')}
+                        value={traits[k] ?? 0}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </div>
 
           {/* World Forces */}

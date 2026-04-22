@@ -33,16 +33,10 @@ function applySimulationRules(
   const result = { ...delta };
 
   // Clamp 0-100 stats
-  const clampedStats = [
-    'health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence',
-  ] as const;
+  const clampedStats = ['health'] as const;
 
   for (const stat of clampedStats) {
     if (result[stat] !== undefined) {
-      const base = (current[stat] as number) ?? 50;
-      // Delta values are absolute when they come from God Mode,
-      // but relative when they come from simulation events.
-      // Here we treat incoming values as the new absolute value.
       result[stat] = Math.max(0, Math.min(100, result[stat] as number));
     }
   }
@@ -244,7 +238,7 @@ export async function applyBulkFilter(
   const ids = matched.map((r) => r.id);
 
   // ── 3. Separate scalar deltas from JSONB trait deltas ────────────────────
-  const CLAMP_STATS = new Set(['health', 'morality', 'happiness', 'reputation', 'influence', 'intelligence']);
+  const CLAMP_STATS = new Set(['health']);
   const scalarSets: Record<string, number>   = {};
   const scalarNudges: Record<string, number> = {};
   const traitSets: Record<string, number>    = {};

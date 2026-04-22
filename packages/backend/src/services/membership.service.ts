@@ -41,13 +41,8 @@ export interface PersonSnapshot {
   id:            string;
   traits:        Record<string, number>;
   global_scores: Record<string, number>;
-  // scalar 0-100 stats we also allow profiles to reference
+  /** Life/death column — also present in traits.health. */
   health:        number;
-  morality:      number;
-  happiness:     number;
-  reputation:    number;
-  influence:     number;
-  intelligence:  number;
 }
 
 // ── Profile matching ────────────────────────────────────────
@@ -58,7 +53,7 @@ export interface PersonSnapshot {
  * Supported key shapes:
  *   - `<identity_attr>`            e.g. "charisma", "ambition"
  *   - `<force>.<child>`            e.g. "faith.devotion"
- *   - one of the 6 core stats      e.g. "morality", "reputation"
+ *   - `health`                      the life/death column
  * Returns undefined for unknown keys so the caller can skip silently.
  */
 function resolveProfileValue(
@@ -69,10 +64,9 @@ function resolveProfileValue(
   if (key.includes('.')) {
     return person.global_scores[key];
   }
-  // Scalar stat?
-  const scalar = (person as unknown as Record<string, unknown>)[key];
-  if (typeof scalar === 'number') return scalar;
-  // Identity attribute
+  // Health column (special-cased since it's not namespaced)
+  if (key === 'health') return person.health;
+  // Identity attribute (all 25 attrs including health duplicate)
   return person.traits[key];
 }
 

@@ -383,8 +383,6 @@ export interface WorldSnapshot {
   market_volatility:        number;
   population:               number;
   avg_health:               number;
-  avg_happiness:            number;
-  avg_morality:             number;
   avg_wealth:               number;
   force_scores:             Record<string, number>;
   global_traits:            Record<string, number>;
@@ -439,8 +437,8 @@ export interface ForceInteractionResult {
   outcome:                  string;
   magnitude:                number;
   creates_memory:           boolean;
-  subject_stats_changed:    Record<string, number>;
-  antagonist_stats_changed: Record<string, number>;
+  subject_traits_changed:    Record<string, number>;
+  antagonist_traits_changed: Record<string, number>;
 }
 
 export interface RulesetListItem {

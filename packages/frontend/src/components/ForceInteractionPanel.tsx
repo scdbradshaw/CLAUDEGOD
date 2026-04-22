@@ -175,11 +175,11 @@ export default function ForceInteractionPanel() {
                 )}
               </div>
 
-              {/* Stat changes */}
-              {(Object.keys(result.subject_stats_changed).length > 0 ||
-                Object.keys(result.antagonist_stats_changed).length > 0) && (
+              {/* Trait changes */}
+              {(Object.keys(result.subject_traits_changed).length > 0 ||
+                Object.keys(result.antagonist_traits_changed).length > 0) && (
                 <div className="text-[10px] text-zinc-500 space-y-0.5 pt-1 border-t border-border">
-                  {Object.entries(result.subject_stats_changed).map(([k, v]) => (
+                  {Object.entries(result.subject_traits_changed).map(([k, v]) => (
                     <div key={k} className="flex justify-between">
                       <span>{result.subject_name} · {k}</span>
                       <span className={v >= 0 ? 'text-emerald-500' : 'text-red-500'}>
@@ -187,7 +187,7 @@ export default function ForceInteractionPanel() {
                       </span>
                     </div>
                   ))}
-                  {Object.entries(result.antagonist_stats_changed).map(([k, v]) => (
+                  {Object.entries(result.antagonist_traits_changed).map(([k, v]) => (
                     <div key={k} className="flex justify-between">
                       <span>{result.antagonist_name} · {k}</span>
                       <span className={v >= 0 ? 'text-emerald-500' : 'text-red-500'}>

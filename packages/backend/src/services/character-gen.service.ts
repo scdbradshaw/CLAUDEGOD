@@ -4,7 +4,12 @@
 // ============================================================
 
 import { Sexuality } from '@prisma/client';
-import { IDENTITY_ATTRIBUTES, GLOBAL_TRAITS } from '@civ-sim/shared';
+import {
+  IDENTITY_ATTRIBUTES,
+  GLOBAL_TRAITS,
+  BIRTH_TRAIT_VARIANCE,
+  MIXED_RACE_LABEL,
+} from '@civ-sim/shared';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -185,6 +190,127 @@ export interface GeneratedCharacter {
   /** All 25 identity attributes (0-100), including health. */
   traits:              Record<string, number>;
   global_scores:       Record<string, number>;
+}
+
+// ── Child generation (Round 2 — Births) ──────────────────────────
+
+export interface ParentSnapshot {
+  id:       string;
+  race:     string;
+  religion: string;
+  traits:   Record<string, number>;
+}
+
+/**
+ * Generate a newborn from two parents per §9.3:
+ *   - Traits: mean(A, B) per key + random(-BIRTH_TRAIT_VARIANCE, +N), clamped.
+ *   - Race: if parents match → same; else MIXED_RACE_LABEL.
+ *   - Religion: chosen by caller (see `pickChildReligion`) and passed in.
+ *   - Age 0, death_age 60-95, wealth 0, relationship_status 'Single'.
+ *   - Gender/sexuality rolled normally.
+ *   - Appearance rolled from child's own race + gender.
+ */
+export function generateChildCharacter(
+  parentA:      ParentSnapshot,
+  parentB:      ParentSnapshot,
+  religion:     string,
+  worldGlobalTraits: Record<string, number> = {},
+): GeneratedCharacter {
+  const gender    = pick(GENDERS);
+  const sexuality = pick(SEXUALITIES);
+
+  const race = parentA.race === parentB.race ? parentA.race : MIXED_RACE_LABEL;
+  const death_age = getLifespan(race);
+
+  // Inherit traits: mean of parents + variance, clamped.
+  const traits: Record<string, number> = {};
+  for (const attrKeys of Object.values(IDENTITY_ATTRIBUTES)) {
+    for (const key of attrKeys) {
+      const a = parentA.traits[key] ?? 50;
+      const b = parentB.traits[key] ?? 50;
+      const mean     = (a + b) / 2;
+      const variance = rnd(-BIRTH_TRAIT_VARIANCE, BIRTH_TRAIT_VARIANCE);
+      traits[key] = clamp(Math.round(mean + variance));
+    }
+  }
+  const health = traits['health'] ?? 100;
+
+  return {
+    name:                getName(race === MIXED_RACE_LABEL ? pick([parentA.race, parentB.race]) : race, gender),
+    sexuality,
+    gender,
+    race,
+    occupation:          'commoner',
+    age:                 0,
+    death_age,
+    relationship_status: 'Single',
+    religion,
+    criminal_record:     [],
+    health,
+    physical_appearance: `Newborn. ${getAppearance(race === MIXED_RACE_LABEL ? parentA.race : race, gender, 0)}`,
+    wealth:              0,
+    traits,
+    global_scores:       generateGlobalScores(worldGlobalTraits),
+  };
+}
+
+/**
+ * Score a religion's virus_profile against a person's traits. Returns a 0-1
+ * fit score — fraction of threshold rules the person satisfies (within
+ * tolerance). Used to decide which parent's religion a newborn inherits when
+ * the two parents differ.
+ *
+ * An empty or malformed virus_profile yields score = 1 (treated as "easy fit"
+ * so an unconfigured religion isn't penalised).
+ */
+export function scoreReligionFit(
+  traits:  Record<string, number>,
+  profile: Record<string, { min?: number; max?: number }>,
+  tolerance = 10,
+): number {
+  const rules = Object.entries(profile ?? {});
+  if (rules.length === 0) return 1;
+  let met = 0;
+  for (const [key, rule] of rules) {
+    const v = traits[key];
+    if (v === undefined) continue; // unknown keys don't count for or against
+    const lo = (rule.min ?? -Infinity) - tolerance;
+    const hi = (rule.max ??  Infinity) + tolerance;
+    if (v >= lo && v <= hi) met++;
+  }
+  return met / rules.length;
+}
+
+/**
+ * Pick the religion a newborn inherits from their two parents per the
+ * "whichever religion aligns with the child's statistics" rule.
+ *
+ * - If neither parent has a religion registered in the world, returns the
+ *   first non-empty string (or 'None' as a fallback).
+ * - If both parents share a religion, it's inherited unchanged.
+ * - If the parents differ, each religion is scored against the child's traits
+ *   and the higher fit wins. Ties break toward parent A.
+ *
+ * `registered` maps religion name → virus_profile + tolerance. Parent-side
+ * religions not in `registered` (e.g. "Agnostic", "None") score 0 so the
+ * registered side wins when available; if neither is registered, parent A's
+ * string is returned.
+ */
+export function pickChildReligion(
+  childTraits: Record<string, number>,
+  parentA:     ParentSnapshot,
+  parentB:     ParentSnapshot,
+  registered:  Map<string, { profile: Record<string, { min?: number; max?: number }>; tolerance: number }>,
+): string {
+  const a = parentA.religion || 'None';
+  const b = parentB.religion || 'None';
+  if (a === b) return a;
+  const regA = registered.get(a);
+  const regB = registered.get(b);
+  const scoreA = regA ? scoreReligionFit(childTraits, regA.profile, regA.tolerance) : 0;
+  const scoreB = regB ? scoreReligionFit(childTraits, regB.profile, regB.tolerance) : 0;
+  if (scoreA === 0 && scoreB === 0) return a; // neither registered — default parent A
+  return scoreB > scoreA ? b : a;
 }
 
 export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Record<string, number> = {}): GeneratedCharacter {

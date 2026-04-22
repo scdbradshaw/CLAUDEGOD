@@ -7,9 +7,9 @@ import { Prisma, Tone } from '@prisma/client';
 import prisma from '../db/client';
 import { toneForOutcomeBand } from '../services/tone.service';
 import {
-  IDENTITY_ATTRIBUTES,
   ALL_IDENTITY_KEYS,
   DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
+  PREGNANCY_DURATION_TICKS,
   type GlobalTraitSet,
   type RulesetDef,
   type InteractionTypeDef,
@@ -17,7 +17,7 @@ import {
   type EffectPacket,
   type TraitSet,
 } from '@civ-sim/shared';
-import { generateGlobalScores } from '../services/character-gen.service';
+import { processBirths, type BirthEvent } from '../services/births.service';
 import { getActiveWorld } from '../services/time.service';
 import {
   loadActiveGroups,
@@ -273,49 +273,6 @@ function pickAntagonizer(
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-// ── Random person generator (for births) ────────────────────
-
-const FIRST_NAMES = [
-  'Aldric','Mira','Caspian','Lyra','Dorian','Sera','Fenwick','Asha',
-  'Brennan','Zoe','Corvus','Isla','Theron','Nyx','Emric','Rowan',
-  'Calla','Gareth','Tessa','Magnus','Elara','Sable','Finn','Orion',
-  'Wren','Cade','Sylva','Hawk','Dusk','Vex',
-];
-const LAST_NAMES = [
-  'Ashford','Bryne','Crane','Erring','Falk','Grim','Hartwell','Irwin',
-  'Jarvis','Kell','Lorne','Mace','Norn','Orin','Pell','Quinn','Ravell',
-  'Stone','Thane','Ulric','Vane','Ward','Crow','Drake','Flint','Gale',
-  'Marsh','Pike','Rowe','Thorn',
-];
-const RACES      = ['Human','Elf','Dwarf','Halfling','Orc','Tiefling','Aasimar'];
-const RELIGIONS  = ['The Light','The Old Ways','The Void','The Earth Mother','The Storm God','Atheist','Agnostic'];
-const SEXUALITIES = ['HETEROSEXUAL','HOMOSEXUAL','BISEXUAL','ASEXUAL','PANSEXUAL','OTHER'] as const;
-const GENDERS    = ['Male','Female','Non-binary'];
-
-function generateRandomPerson(worldTraits: Record<string, number> = {}) {
-  const traits: Record<string, number> = {};
-  for (const list of Object.values(IDENTITY_ATTRIBUTES)) {
-    for (const t of list) traits[t] = randInt(20, 80);
-  }
-  return {
-    name:                 `${FIRST_NAMES[randInt(0, FIRST_NAMES.length - 1)]} ${LAST_NAMES[randInt(0, LAST_NAMES.length - 1)]}`,
-    sexuality:            SEXUALITIES[randInt(0, SEXUALITIES.length - 1)],
-    gender:               GENDERS[randInt(0, GENDERS.length - 1)],
-    race:                 RACES[randInt(0, RACES.length - 1)],
-    occupation:           'commoner',
-    age:                  0,
-    death_age:            randInt(60, 95),
-    relationship_status:  'Single',
-    religion:             RELIGIONS[randInt(0, RELIGIONS.length - 1)],
-    criminal_record:      [],
-    health:               traits['health'] ?? 100,
-    physical_appearance:  'Newborn',
-    wealth:               0,
-    traits,
-    global_scores:        generateGlobalScores(worldTraits),
-  };
-}
-
 // ── POST /api/interactions/tick ──────────────────────────────
 
 router.post('/tick', async (_req: Request, res: Response) => {
@@ -418,6 +375,12 @@ router.post('/tick', async (_req: Request, res: Response) => {
     // Group-formation intents — one per founder per tick (emergent or event).
     const pendingSpawnsByFounder = new Map<string, SpawnIntent>();
 
+    // Pregnancy intents from `creates_pregnancy` outcome bands. Deduped by
+    // unordered pair so the same two people can't queue multiple conceptions
+    // in a single tick; the in-transaction writer further guards against
+    // either participant already carrying an unresolved pregnancy.
+    const pendingPregnanciesByPair = new Map<string, { parent_a_id: string; parent_b_id: string }>();
+
     const shuffled = [...living].sort(() => Math.random() - 0.5);
 
     for (const protagonist of shuffled) {
@@ -497,6 +460,20 @@ router.post('/tick', async (_req: Request, res: Response) => {
         const eventSpawn = tryEventSpawn(protoSnap, antaSnap, band);
         const spawn = eventSpawn ?? tryEmergentSpawn(protoSnap, band);
         if (spawn) pendingSpawnsByFounder.set(spawn.founderId, spawn);
+
+        // 3d. Conception — bands flagged `creates_pregnancy` queue a
+        // Pregnancy row between protagonist and antagonist, but only when the
+        // interaction type itself opts in via `can_conceive`. The type gate
+        // lets the same band be reused across unrelated interactions (e.g. a
+        // `legendary` outcome on a conflict) without unintended births.
+        // Ordering within the pair key is stable so the dedupe doesn't depend
+        // on who was rolled as protagonist this tick.
+        if (band.creates_pregnancy && iType.can_conceive) {
+          const [a, b] = protagonist.id < antagonist.id
+            ? [protagonist.id, antagonist.id]
+            : [antagonist.id,  protagonist.id];
+          pendingPregnanciesByPair.set(`${a}:${b}`, { parent_a_id: a, parent_b_id: b });
+        }
       }
     }
 
@@ -628,6 +605,34 @@ router.post('/tick', async (_req: Request, res: Response) => {
       for (const intent of pendingSpawnsByFounder.values()) {
         const result = await spawnGroup(tx, intent, world.current_year, world.id);
         spawnResults.push(result);
+      }
+
+      // 5d. Pregnancies queued by `creates_pregnancy` outcome bands. Filter
+      // out any pair where either party died this tick (their row has been
+      // deleted downstream) or already carries an unresolved pregnancy.
+      // Both guards live here because we need the tx to see consistent state.
+      for (const pair of pendingPregnanciesByPair.values()) {
+        const existing = await tx.pregnancy.findFirst({
+          where: {
+            world_id: world.id,
+            resolved: false,
+            OR: [
+              { parent_a_id: pair.parent_a_id }, { parent_b_id: pair.parent_a_id },
+              { parent_a_id: pair.parent_b_id }, { parent_b_id: pair.parent_b_id },
+            ],
+          },
+          select: { id: true },
+        });
+        if (existing) continue;
+        await tx.pregnancy.create({
+          data: {
+            parent_a_id:  pair.parent_a_id,
+            parent_b_id:  pair.parent_b_id,
+            world_id:     world.id,
+            started_tick: world.tick_count,
+            due_tick:     world.tick_count + PREGNANCY_DURATION_TICKS,
+          },
+        });
       }
     });
 
@@ -779,7 +784,11 @@ router.post('/tick', async (_req: Request, res: Response) => {
       }
 
       const agenticResult = await prisma.$transaction(async (tx) =>
-        runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, world.id),
+        runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, world.id, {
+          startedTick:            newTickCount,
+          pregnancyDurationTicks: PREGNANCY_DURATION_TICKS,
+          conceive:               rules.capability_gates?.agentic_conceive,
+        }),
       );
       agenticActions = agenticResult.actions;
       religionDissolves.push(...agenticResult.religion_dissolves);
@@ -803,24 +812,17 @@ router.post('/tick', async (_req: Request, res: Response) => {
       conversions = conversionResult.conversions;
     }
 
-    // 8. Births — every 10 cumulative deaths triggers 12 new births
-    const newTotalDeaths   = oldTotalDeaths + deathsThisTick;
-    const birthBatchesPrev = Math.floor(oldTotalDeaths / 10);
-    const birthBatchesNow  = Math.floor(newTotalDeaths / 10);
-    const birthsThisTick   = (birthBatchesNow - birthBatchesPrev) * 12;
-
-    for (let i = 0; i < birthsThisTick; i++) {
-      const newborn = generateRandomPerson(globalTraits as Record<string, number>);
-      await prisma.person.create({
-        data: {
-          ...newborn,
-          world_id:        world.id,
-          criminal_record: newborn.criminal_record as never,
-          traits:          newborn.traits          as never,
-          global_scores:   newborn.global_scores   as never,
-        },
-      });
-    }
+    // 8. Births — resolve any pregnancies whose due_tick has arrived. This
+    //    replaces the legacy "12 births per 10 deaths" population-upkeep
+    //    loop with the interaction-driven model described in DESIGN §9.
+    const newTotalDeaths = oldTotalDeaths + deathsThisTick;
+    const birthEvents: BirthEvent[] = await processBirths(
+      world.id,
+      newTickCount,
+      newYear,
+      globalTraits as Record<string, number>,
+    );
+    const birthsThisTick = birthEvents.length;
 
     // 9. Market engine — drift + mean-reversion + ceiling/floor
     const noise             = randFloat(-world.market_volatility, world.market_volatility);
@@ -855,6 +857,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
       interactions_processed: shuffled.length,
       deaths_this_tick:       deathsThisTick,
       births_this_tick:       birthsThisTick,
+      births:                 birthEvents,
       market_return_pct:      Math.round(marketReturn * 1000) / 10,
       new_market_index:       Math.round(newMarketIdx * 100) / 100,
       top_scores:             topScores,

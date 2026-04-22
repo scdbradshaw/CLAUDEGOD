@@ -174,6 +174,12 @@ export interface InteractionTypeDef {
   weight:            number;
   trait_weights:     TraitWeight[];
   global_amplifiers: GlobalAmplifier[];
+  /**
+   * Whether a positive-band outcome of this interaction can queue a
+   * Pregnancy. Gates the band-level `creates_pregnancy` flag so the same
+   * band can be reused across interaction types without unintended births.
+   */
+  can_conceive?:     boolean;
 }
 
 /**
@@ -229,6 +235,14 @@ export interface OutcomeBand {
     profile_source?: 'founder_standouts';
   };
 
+  /**
+   * When true, a successful outcome of this band queues a pregnancy between
+   * the subject and antagonist. Resolves at tick = started_tick +
+   * PREGNANCY_DURATION_TICKS via createChildFromParents. Ignored if either
+   * participant is already in an unresolved pregnancy together.
+   */
+  creates_pregnancy?: boolean;
+
   /** @deprecated use subject_effect.stat_delta — retained for legacy rulesets */
   stat_delta?:      [number, number];
   /** @deprecated use subject_effect.affects_stats */
@@ -270,7 +284,28 @@ export interface CapabilityGates {
   agentic_betray?: { bond_min: number };
   /** Agentic befriend action */
   agentic_befriend?: { bond_min: number; bond_max: number };
+  /**
+   * Agentic conception — a bonded pair decides to try for a child. Set
+   * `enabled: false` to disable the agentic path entirely (interaction-driven
+   * conception still works).
+   */
+  agentic_conceive?: { bond_min?: number; enabled?: boolean };
 }
+
+/**
+ * Number of ticks from conception to birth. 2 ticks = 1 world year.
+ * Kept in shared so the ruleset author and the tick engine agree.
+ */
+export const PREGNANCY_DURATION_TICKS = 2;
+
+/**
+ * Variance applied per identity attribute when averaging parent traits at
+ * birth. Child trait = clamp(mean(A, B) + random(-N, N), 0, 100).
+ */
+export const BIRTH_TRAIT_VARIANCE = 8;
+
+/** Race label used when the two parents have different races. */
+export const MIXED_RACE_LABEL = 'Mixed';
 
 export interface RulesetDef {
   version:           number;

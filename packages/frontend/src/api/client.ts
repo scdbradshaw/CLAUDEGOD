@@ -60,6 +60,22 @@ export interface RelationshipRow {
   updated_at:    string;
 }
 
+// Round 2 — immediate genealogy returned by /api/characters/:id/lineage.
+// Only living parents/children appear; deaths migrate rows out of `persons`
+// and SET NULL the self-relations.
+export interface LineagePerson {
+  id:       string;
+  name:     string;
+  age:      number;
+  health:   number;
+  race:     string;
+  religion: string;
+}
+export interface LineageResponse {
+  parents:  LineagePerson[];
+  children: LineagePerson[];
+}
+
 export type { City, CityWithStats } from '@civ-sim/shared';
 
 const BASE = '/api';
@@ -142,6 +158,10 @@ export const api = {
     // Phase 7 Wave 2 — outgoing relationship edges, strongest-from-neutral first.
     relationships: (id: string, limit = 24) =>
       request<RelationshipRow[]>(`/characters/${id}/relationships?limit=${limit}`),
+
+    // Round 2 — immediate genealogy (living parents + children only).
+    lineage: (id: string) =>
+      request<LineageResponse>(`/characters/${id}/lineage`),
   },
 
   rulesets: {

@@ -146,6 +146,7 @@ model World {
   world_memories WorldMemory[]
   tick_jobs      TickJob[]
   yearly_reports YearlyReport[]
+  pregnancies    Pregnancy[]
   city           City?
 
   @@index([is_active])
@@ -212,6 +213,13 @@ model Person {
   world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
   world_id String @db.Uuid
 
+  // ── Genealogy (Round 2 — Births) ─────────────────────────
+  /// One of the two biological parents. Null for seed / player-injected people.
+  parent_a_id String? @db.Uuid
+  parent_b_id String? @db.Uuid
+  parent_a    Person? @relation("ParentA", fields: [parent_a_id], references: [id], onDelete: SetNull)
+  parent_b    Person? @relation("ParentB", fields: [parent_b_id], references: [id], onDelete: SetNull)
+
   // ── Timestamps ───────────────────────────────────────────
   created_at DateTime @default(now())
   updated_at DateTime @updatedAt
@@ -226,9 +234,50 @@ model Person {
   founded_factions     Faction[]            @relation("FactionFounder")
   led_factions         Faction[]            @relation("FactionLeader")
   faction_memberships  FactionMembership[]
+  children_a           Person[]             @relation("ParentA")
+  children_b           Person[]             @relation("ParentB")
+  pregnancies_a        Pregnancy[]          @relation("PregnancyParentA")
+  pregnancies_b        Pregnancy[]          @relation("PregnancyParentB")
 
   @@index([world_id])
+  @@index([parent_a_id])
+  @@index([parent_b_id])
   @@map("persons")
+}
+
+// --------------- Pregnancies (Round 2 — Births) ---------------
+// Created by a positive-band `conception` interaction outcome OR by the
+// agentic `attempt_conception` action. Resolves at tick = due_tick by
+// creating a child Person via createChildFromParents() and setting
+// resolved = true + child_id. A pregnancy whose parent dies before
+// resolution is dropped silently (Cascade on both parent foreign keys).
+model Pregnancy {
+  id String @id @default(uuid()) @db.Uuid
+
+  parent_a    Person @relation("PregnancyParentA", fields: [parent_a_id], references: [id], onDelete: Cascade)
+  parent_a_id String @db.Uuid
+  parent_b    Person @relation("PregnancyParentB", fields: [parent_b_id], references: [id], onDelete: Cascade)
+  parent_b_id String @db.Uuid
+
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  /// Tick at which the pregnancy began.
+  started_tick Int
+  /// Tick at which the pregnancy resolves — started_tick + PREGNANCY_DURATION_TICKS.
+  due_tick     Int
+
+  resolved Boolean @default(false)
+  child_id String? @db.Uuid
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  @@index([world_id])
+  @@index([resolved, due_tick])
+  @@index([parent_a_id])
+  @@index([parent_b_id])
+  @@map("pregnancies")
 }
 
 // --------------- Inner Circle Links ---------------

@@ -184,6 +184,33 @@ router.get('/:id/relationships', async (req: Request, res: Response) => {
   res.json(rows);
 });
 
+// ── GET /api/characters/:id/lineage (Round 2) ────────────────
+// Returns immediate genealogy: parents (by parent_a_id/parent_b_id) and
+// children (reverse of either self-relation). Dead parents/children are
+// NOT included — the self-relations are SET NULL on delete and only living
+// persons stay in the `persons` table (deceased migrate to deceased_persons).
+router.get('/:id/lineage', async (req: Request, res: Response) => {
+  const person = await prisma.person.findUnique({
+    where:  { id: req.params.id },
+    select: {
+      parent_a: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
+      parent_b: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
+      children_a: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
+      children_b: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
+    },
+  });
+  if (!person) { res.status(404).json({ error: 'Person not found' }); return; }
+
+  const parents = [person.parent_a, person.parent_b].filter((p): p is NonNullable<typeof p> => p !== null);
+  // Dedupe children in case both parent slots point at the same subject
+  // (shouldn't happen, but cheap to guard).
+  const childMap = new Map<string, typeof person.children_a[number]>();
+  for (const c of [...person.children_a, ...person.children_b]) childMap.set(c.id, c);
+  const children = [...childMap.values()].sort((a, b) => a.age - b.age);
+
+  res.json({ parents, children });
+});
+
 // ── Seed counts per population tier ──────────────────────────
 // Drives GET /api/characters/seed — an empty world seeds to the middle
 // of its tier's range, giving the player something to work with without

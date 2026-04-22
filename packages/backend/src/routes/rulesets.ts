@@ -14,7 +14,7 @@ const router = Router();
 // IDENTITY_ATTRIBUTES. Any unknown trait key is silently skipped by
 // the engine, so rulesets can evolve ahead of the attribute schema.
 export const DEFAULT_RULESET: RulesetDef = {
-  version: 4,
+  version: 5,
 
   interaction_types: [
     {
@@ -113,6 +113,29 @@ export const DEFAULT_RULESET: RulesetDef = {
         { key: 'faith.zealotry',          multiplier: 0.20 },
       ],
     },
+
+    // Conception — intimate path into the births system. Only interaction
+    // type with `can_conceive: true`, so only this type's positive bands
+    // can ever queue a Pregnancy (see interactions.ts §3d).
+    {
+      id:     'conception',
+      label:  'Intimacy',
+      weight: 1,
+      can_conceive: true,
+      trait_weights: [
+        { trait: 'charisma',     sign:  1 },
+        { trait: 'empathy',      sign:  1 },
+        { trait: 'humor',        sign:  1 },
+        { trait: 'ambition',     sign:  1 },
+        { trait: 'honesty',      sign:  1 },
+        { trait: 'intelligence', sign:  1, multiplier: 0.5 },
+      ],
+      global_amplifiers: [
+        { key: 'faith.spiritual_comfort', multiplier: 0.20 },
+        { key: 'scarcity.food_supply',    multiplier: 0.15 },
+        { key: 'plague.infection_rate',   multiplier: 0.15 },
+      ],
+    },
   ],
 
   // Ordered highest → lowest. First match wins.
@@ -149,9 +172,12 @@ export const DEFAULT_RULESET: RulesetDef = {
         stat_delta:    [-10, -3],
         affects_stats: ['charisma', 'resilience'],
       },
-      can_die:          false,
-      creates_memory:   true,
-      creates_headline: false,
+      can_die:            false,
+      creates_memory:     true,
+      creates_headline:   false,
+      // Only fires as a conception when the interaction type opts in
+      // via `can_conceive` — see interactions.ts §3d gating.
+      creates_pregnancy:  true,
     },
     {
       label:     'minor_good',
@@ -234,12 +260,13 @@ export const DEFAULT_RULESET: RulesetDef = {
   ],
 
   capability_gates: {
-    found_religion: { leadership_min: 60, charisma_min: 55 },
-    found_faction:  { leadership_min: 60, charisma_min: 55 },
-    agentic_murder: { honesty_max: 25, bond_max: 15 },
-    agentic_marry:  { bond_min: 80 },
-    agentic_betray: { bond_min: 75 },
+    found_religion:   { leadership_min: 60, charisma_min: 55 },
+    found_faction:    { leadership_min: 60, charisma_min: 55 },
+    agentic_murder:   { honesty_max: 25, bond_max: 15 },
+    agentic_marry:    { bond_min: 80 },
+    agentic_betray:   { bond_min: 75 },
     agentic_befriend: { bond_min: 55, bond_max: 74 },
+    agentic_conceive: { bond_min: 60, enabled: true },
   },
 
   // Applied to every living person each tick. Formula per stat:

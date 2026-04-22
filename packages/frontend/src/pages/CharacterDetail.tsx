@@ -28,7 +28,7 @@ const TRAIT_CATEGORIES: { label: string; color: string; keys: readonly string[] 
   { label: 'Physical', color: 'text-red-400',     keys: IDENTITY_ATTRIBUTES.physical },
   { label: 'Mental',   color: 'text-sky-400',     keys: IDENTITY_ATTRIBUTES.mental   },
   { label: 'Social',   color: 'text-emerald-400', keys: IDENTITY_ATTRIBUTES.social   },
-  { label: 'Drive',    color: 'text-amber-400',   keys: IDENTITY_ATTRIBUTES.drive    },
+  { label: 'Character', color: 'text-amber-400',  keys: IDENTITY_ATTRIBUTES.character },
   { label: 'Skills',   color: 'text-violet-400',  keys: IDENTITY_ATTRIBUTES.skills   },
 ];
 
@@ -62,6 +62,13 @@ export default function CharacterDetail() {
   const { data: relationships } = useQuery({
     queryKey: ['character', id, 'relationships'],
     queryFn:  () => api.characters.relationships(id!, 24),
+    enabled:  !!id,
+  });
+
+  // Immediate genealogy — living parents + children. Round 2.
+  const { data: lineage } = useQuery({
+    queryKey: ['character', id, 'lineage'],
+    queryFn:  () => api.characters.lineage(id!),
     enabled:  !!id,
   });
 
@@ -296,6 +303,58 @@ export default function CharacterDetail() {
                   );
                 })}
               </ul>
+            )}
+          </div>
+
+          {/* Lineage — Round 2 (immediate genealogy, living kin only) */}
+          <div className="panel p-4">
+            <h2 className="font-display text-[10px] text-gold uppercase tracking-widest mb-3">
+              Lineage
+              <span className="ml-2 text-gray-600 font-mono font-normal">
+                ({(lineage?.parents.length ?? 0) + (lineage?.children.length ?? 0)})
+              </span>
+            </h2>
+            {!lineage || (lineage.parents.length === 0 && lineage.children.length === 0) ? (
+              <p className="text-xs text-muted italic">No recorded kin.</p>
+            ) : (
+              <div className="space-y-3">
+                {lineage.parents.length > 0 && (
+                  <div>
+                    <h3 className="text-[10px] text-muted uppercase tracking-wider mb-1">Parents</h3>
+                    <ul className="space-y-1">
+                      {lineage.parents.map((p) => (
+                        <li key={p.id} className="text-xs flex items-center justify-between gap-2">
+                          <Link to={`/character/${p.id}`} className="text-gray-200 hover:text-gold truncate">
+                            {p.name}
+                          </Link>
+                          <span className="text-[10px] text-muted tabular-nums shrink-0">
+                            {p.age} yrs
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {lineage.children.length > 0 && (
+                  <div>
+                    <h3 className="text-[10px] text-muted uppercase tracking-wider mb-1">
+                      Children ({lineage.children.length})
+                    </h3>
+                    <ul className="space-y-1 max-h-[200px] overflow-y-auto pr-1">
+                      {lineage.children.map((c) => (
+                        <li key={c.id} className="text-xs flex items-center justify-between gap-2">
+                          <Link to={`/character/${c.id}`} className="text-gray-200 hover:text-gold truncate">
+                            {c.name}
+                          </Link>
+                          <span className="text-[10px] text-muted tabular-nums shrink-0">
+                            {c.age} yrs
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 

@@ -8,10 +8,13 @@
 // having intent, not just noise.
 //
 // Actions (v1):
-//   - befriend  — solidify a warm-but-not-close edge into close_friend
-//   - betray    — flip an existing close_friend into a rival/enemy
-//   - marry     — convert a strong lover/close_friend edge into spouse
-//   - murder    — kill a low-bond enemy (requires low-morality agent)
+//   - befriend          — solidify a warm-but-not-close edge into close_friend
+//   - betray            — flip an existing close_friend into a rival/enemy
+//   - marry             — convert a strong lover/close_friend edge into spouse
+//   - murder            — kill a low-bond enemy (requires low-morality agent)
+//   - attempt_conception — a bonded pair (bond ≥ conceive_bond_min) creates
+//                           a Pregnancy row; resolves later into a Person
+//                           via createChildFromParents.
 //
 // Scope:
 //   - Runs only on year-boundary ticks (annual cadence).
@@ -47,6 +50,7 @@ const BETRAY_BOND_MIN    = 75;  // close enough to hurt
 const MARRY_BOND_MIN     = 80;  // deeply bonded
 const MURDER_BOND_MAX    = 15;  // intense enmity only
 const MURDER_MORALITY_MAX = 25; // callous agent only
+const CONCEIVE_BOND_MIN  = 60;  // warm enough to choose to have a child
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -67,7 +71,22 @@ export interface OwnedEdge {
   bond_strength: number;
 }
 
-export type AgenticActionKind = 'befriend' | 'betray' | 'marry' | 'murder';
+export type AgenticActionKind =
+  | 'befriend'
+  | 'betray'
+  | 'marry'
+  | 'murder'
+  | 'attempt_conception';
+
+/**
+ * Ruleset-tunable knob for the agentic conception action. `enabled: false`
+ * disables the agentic path entirely (interaction-driven conception still
+ * works). `bond_min` overrides the default CONCEIVE_BOND_MIN.
+ */
+export interface ConceiveConfig {
+  enabled?: boolean;
+  bond_min?: number;
+}
 
 export interface AgenticActionLog {
   kind:          AgenticActionKind;
@@ -121,10 +140,11 @@ export function selectAgents(
 // ── Action decision ─────────────────────────────────────────
 
 type PlannedAction =
-  | { kind: 'befriend'; target: OwnedEdge }
-  | { kind: 'betray';   target: OwnedEdge }
-  | { kind: 'marry';    target: OwnedEdge }
-  | { kind: 'murder';   target: OwnedEdge };
+  | { kind: 'befriend';            target: OwnedEdge }
+  | { kind: 'betray';              target: OwnedEdge }
+  | { kind: 'marry';               target: OwnedEdge }
+  | { kind: 'murder';              target: OwnedEdge }
+  | { kind: 'attempt_conception';  target: OwnedEdge };
 
 /**
  * Pick the most interesting action available to this agent given their
@@ -134,9 +154,10 @@ type PlannedAction =
  * nothing that year, which is realistic noise.
  */
 export function pickActionFor(
-  agent: AgentPersonSnapshot,
-  edges: OwnedEdge[],
-  byId:  Map<string, AgentPersonSnapshot>,
+  agent:  AgentPersonSnapshot,
+  edges:  OwnedEdge[],
+  byId:   Map<string, AgentPersonSnapshot>,
+  config: { conceive?: ConceiveConfig } = {},
 ): PlannedAction | null {
   if (edges.length === 0) return null;
 
@@ -183,6 +204,22 @@ export function pickActionFor(
     .sort((a, b) => b.bond_strength - a.bond_strength)[0];
   if (friend) return { kind: 'befriend', target: friend };
 
+  // Attempt conception — bonded pair (spouse/lover/close_friend with strong
+  // bond). Any age, any gender — the world has no biological gating (§4.1).
+  // Fires only if the agent isn't already a parent of an unresolved pregnancy
+  // (checked in executeActions since this planner is side-effect-free).
+  const conceive = config.conceive ?? {};
+  if (conceive.enabled !== false) {
+    const bondMin = conceive.bond_min ?? CONCEIVE_BOND_MIN;
+    const mate = live
+      .filter(e =>
+        (e.relation_type === 'spouse' || e.relation_type === 'lover' || e.relation_type === 'close_friend')
+        && e.bond_strength >= bondMin,
+      )
+      .sort((a, b) => b.bond_strength - a.bond_strength)[0];
+    if (mate) return { kind: 'attempt_conception', target: mate };
+  }
+
   return null;
 }
 
@@ -201,6 +238,10 @@ export async function executeActions(
   byId:         Map<string, AgentPersonSnapshot>,
   worldYear:    number,
   worldId:      string,
+  ctx:          {
+    startedTick:            number;
+    pregnancyDurationTicks: number;
+  },
 ): Promise<AgenticRunResult> {
   const logs:        AgenticActionLog[] = [];
   const memories:    MemoryWriteInput[] = [];
@@ -284,6 +325,41 @@ export async function executeActions(
         break;
       }
 
+      case 'attempt_conception': {
+        // Skip if either parent already carries an unresolved pregnancy —
+        // one-at-a-time per person, regardless of partner.
+        const existing = await tx.pregnancy.findFirst({
+          where: {
+            world_id: worldId,
+            resolved: false,
+            OR: [
+              { parent_a_id: agent.id },  { parent_b_id: agent.id },
+              { parent_a_id: target.id }, { parent_b_id: target.id },
+            ],
+          },
+          select: { id: true },
+        });
+        if (existing) break;
+
+        await tx.pregnancy.create({
+          data: {
+            parent_a_id:  agent.id,
+            parent_b_id:  target.id,
+            world_id:     worldId,
+            started_tick: ctx.startedTick,
+            due_tick:     ctx.startedTick + ctx.pregnancyDurationTicks,
+          },
+        });
+        memories.push(makeMemory(agent.id, target.id,
+          `Expecting a child with ${target.name}.`,
+          'euphoric', 0.7, agent.age, worldYear));
+        memories.push(makeMemory(target.id, agent.id,
+          `Expecting a child with ${agent.name}.`,
+          'euphoric', 0.7, target.age, worldYear));
+        logs.push(log('attempt_conception', agent, target, false));
+        break;
+      }
+
       case 'murder': {
         // Record the kill; defer the actual death handling until after
         // memory/relationship writes so we don't double-write memories
@@ -360,11 +436,16 @@ export async function executeActions(
  * in its response payload.
  */
 export async function runAgenticTurn(
-  tx:       Prisma.TransactionClient,
-  living:   AgentPersonSnapshot[],
-  linksOf:  Map<string, OwnedEdge[]>,
+  tx:        Prisma.TransactionClient,
+  living:    AgentPersonSnapshot[],
+  linksOf:   Map<string, OwnedEdge[]>,
   worldYear: number,
   worldId:   string,
+  ctx:       {
+    startedTick:            number;
+    pregnancyDurationTicks: number;
+    conceive?:              ConceiveConfig;
+  },
 ): Promise<AgenticRunResult> {
   if (living.length < MIN_POP_FOR_AGENCY) return { actions: [], religion_dissolves: [], inheritances: [] };
 
@@ -380,12 +461,15 @@ export async function runAgenticTurn(
   const plans = new Map<string, PlannedAction>();
   for (const a of agents) {
     const edges = linksOf.get(a.id) ?? [];
-    const plan  = pickActionFor(a, edges, byId);
+    const plan  = pickActionFor(a, edges, byId, { conceive: ctx.conceive });
     if (plan) plans.set(a.id, plan);
   }
   if (plans.size === 0) return { actions: [], religion_dissolves: [], inheritances: [] };
 
-  return executeActions(tx, agents, plans, byId, worldYear, worldId);
+  return executeActions(tx, agents, plans, byId, worldYear, worldId, {
+    startedTick:            ctx.startedTick,
+    pregnancyDurationTicks: ctx.pregnancyDurationTicks,
+  });
 }
 
 // ── Helpers ─────────────────────────────────────────────────

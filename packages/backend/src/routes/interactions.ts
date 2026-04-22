@@ -27,7 +27,7 @@ import {
 } from '../tick/scoring';
 import { resolveInteractionsPhase } from '../tick/resolve-interactions';
 import { withTiming, timingsEnabled, type PhaseTimings } from '../tick/timing';
-import { updateMarketPhase, type MarketEvent } from '../tick/market';
+import { updateThreeMarkets, type MarketEvent, type MarketHistoryEntry } from '../tick/market';
 import { processBirths, type BirthEvent } from '../services/births.service';
 import { getActiveWorld } from '../services/time.service';
 import {
@@ -608,26 +608,40 @@ router.post('/tick', async (_req: Request, res: Response) => {
     );
     const birthsThisTick = birthEvents.length;
 
-    // 9. Market engine — Round 8: phase module handles drift + trait-
-    //    weighted wealth drift + crash/boom/bubble/depression detection.
-    const { newMarketIdx, marketReturn, marketEvent } = await withTiming(timings, 'updateMarket', () =>
-      updateMarketPhase({
+    // 9. Market engine — three-market system: income + investment returns +
+    //    crash/boom/bubble/depression detection across all three buckets.
+    const currentHistory = (world.market_history as unknown as MarketHistoryEntry[]) ?? [];
+    const threeMarkets = await withTiming(timings, 'updateMarket', () =>
+      updateThreeMarkets({
         prisma,
-        worldId:          world.id,
-        marketIndex:      world.market_index,
-        marketTrend:      world.market_trend,
-        marketVolatility: world.market_volatility,
+        worldId:            world.id,
+        tickCount:          newTickCount,
+        stableIndex:        world.market_stable_index,
+        stableTrend:        world.market_stable_trend,
+        stableVolatility:   world.market_stable_volatility,
+        standardIndex:      world.market_index,
+        standardTrend:      world.market_trend,
+        standardVolatility: world.market_volatility,
+        volatileIndex:      world.market_volatile_index,
+        volatileTrend:      world.market_volatile_trend,
+        volatileVolatility: world.market_volatile_volatility,
+        marketHistory:      currentHistory,
       }),
     );
+    const { stable: stableOut, standard: standardOut, volatile: volatileOut, highlights, marketHistory, topEvent } = threeMarkets;
 
     // 10. Persist world state
     await prisma.world.update({
       where: { id: world.id },
       data:  {
-        tick_count:    newTickCount,
-        total_deaths:  newTotalDeaths,
-        market_index:  newMarketIdx,
-        current_year:  newYear,
+        tick_count:              newTickCount,
+        total_deaths:            newTotalDeaths,
+        market_index:            standardOut.newIndex,
+        market_stable_index:     stableOut.newIndex,
+        market_volatile_index:   volatileOut.newIndex,
+        current_year:            newYear,
+        market_history:          marketHistory as unknown as import('@prisma/client').Prisma.InputJsonValue,
+        market_highlights:       highlights    as unknown as import('@prisma/client').Prisma.InputJsonValue,
       },
     });
 
@@ -638,10 +652,19 @@ router.post('/tick', async (_req: Request, res: Response) => {
       deaths_this_tick:       deathsThisTick,
       births_this_tick:       birthsThisTick,
       births:                 birthEvents,
-      market_return_pct:      Math.round(marketReturn * 1000) / 10,
-      new_market_index:       Math.round(newMarketIdx * 100) / 100,
-      // Round 8 — crash/boom/bubble/depression detected this tick (null otherwise)
-      market_event:           marketEvent,
+      // Three-market system
+      market_stable_return_pct:   Math.round(stableOut.marketReturn   * 1000) / 10,
+      market_standard_return_pct: Math.round(standardOut.marketReturn * 1000) / 10,
+      market_volatile_return_pct: Math.round(volatileOut.marketReturn * 1000) / 10,
+      new_stable_index:   Math.round(stableOut.newIndex   * 100) / 100,
+      new_standard_index: Math.round(standardOut.newIndex * 100) / 100,
+      new_volatile_index: Math.round(volatileOut.newIndex * 100) / 100,
+      market_highlights:  highlights,
+      // Most severe event across all three markets (null otherwise)
+      market_event:       topEvent,
+      // Legacy field — standard market return (kept for dashboard compat)
+      market_return_pct:  Math.round(standardOut.marketReturn * 1000) / 10,
+      new_market_index:   Math.round(standardOut.newIndex * 100) / 100,
       top_scores:             topScores,
       memories_created:       pendingMemories.length,
       memberships_joined:     pendingJoinsByKey.size,

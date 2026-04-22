@@ -243,6 +243,20 @@ export interface GeneratedCharacter {
   /** All 25 identity attributes (0-100), including health. */
   traits:              Record<string, number>;
   global_scores:       Record<string, number>;
+  /** Which of the three markets this person invests in. */
+  market_bucket:       'stable' | 'standard' | 'volatile';
+}
+
+/**
+ * Assign a market bucket based on intelligence + cunning.
+ * Smart + bold → volatile; smart + cautious → stable; everyone else → standard.
+ */
+function assignMarketBucket(traits: Record<string, number>): 'stable' | 'standard' | 'volatile' {
+  const intelligence = traits['intelligence'] ?? 50;
+  const cunning      = traits['cunning']      ?? 50;
+  if (intelligence > 60 && cunning > 60) return 'volatile';
+  if (intelligence > 60)                 return 'stable';
+  return 'standard';
 }
 
 // ── Child generation (Round 2 — Births) ──────────────────────────
@@ -304,6 +318,7 @@ export function generateChildCharacter(
     wealth:              0,
     traits,
     global_scores:       generateGlobalScores(worldGlobalTraits),
+    market_bucket:       assignMarketBucket(traits),
   };
 }
 
@@ -401,5 +416,6 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
     wealth:              parseFloat((Math.random() * (archetype.wealthMax - archetype.wealthMin) + archetype.wealthMin).toFixed(2)),
     traits,
     global_scores:       generateGlobalScores(worldGlobalTraits),
+    market_bucket:       assignMarketBucket(traits),
   };
 }

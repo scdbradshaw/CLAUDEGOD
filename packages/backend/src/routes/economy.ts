@@ -20,10 +20,39 @@ router.get('/', async (_req: Request, res: Response) => {
     ? world.global_traits as Record<string, number>
     : DEFAULT_GLOBAL_TRAITS;
 
+  // Member counts per market bucket
+  const bucketCounts = await prisma.$queryRaw<Array<{ market_bucket: string; cnt: bigint }>>`
+    SELECT market_bucket, COUNT(*) AS cnt
+    FROM persons
+    WHERE world_id = ${world.id}::uuid AND health > 0
+    GROUP BY market_bucket
+  `;
+  const memberCounts: Record<string, number> = {};
+  for (const row of bucketCounts) memberCounts[row.market_bucket] = Number(row.cnt);
+
   res.json({
+    // Standard market (index)
     market_index:             world.market_index,
     market_trend:             world.market_trend,
     market_volatility:        world.market_volatility,
+    // Stable market
+    market_stable_index:      world.market_stable_index,
+    market_stable_trend:      world.market_stable_trend,
+    market_stable_volatility: world.market_stable_volatility,
+    // Volatile market
+    market_volatile_index:     world.market_volatile_index,
+    market_volatile_trend:     world.market_volatile_trend,
+    market_volatile_volatility: world.market_volatile_volatility,
+    // History + highlights
+    market_history:            world.market_history,
+    market_highlights:         world.market_highlights,
+    // Live member counts per bucket
+    market_member_counts: {
+      stable:   memberCounts['stable']   ?? 0,
+      standard: memberCounts['standard'] ?? 0,
+      volatile: memberCounts['volatile'] ?? 0,
+    },
+    // World state
     tick_count:               world.tick_count,
     total_deaths:             world.total_deaths,
     current_year:             world.current_year,

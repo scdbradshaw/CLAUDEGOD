@@ -423,10 +423,45 @@ export interface AgenticActionLog {
 
 // --------------- Economy ---------------
 
+export interface MarketHistoryEntry {
+  tick:     number;
+  stable:   number;
+  standard: number;
+  volatile: number;
+}
+
+export interface MarketBucketHighlight {
+  return_pct:      number;
+  gain_per_person: number;
+  member_count:    number;
+}
+
+export interface MarketHighlights {
+  stable:     MarketBucketHighlight;
+  standard:   MarketBucketHighlight;
+  volatile:   MarketBucketHighlight;
+  top_gainer: { name: string; market: string; gain: number } | null;
+  top_loser:  { name: string; market: string; gain: number } | null;
+}
+
 export interface EconomyState {
+  // Standard (index) market
   market_index:             number;
   market_trend:             number;
   market_volatility:        number;
+  // Stable (bonds) market
+  market_stable_index:      number;
+  market_stable_trend:      number;
+  market_stable_volatility: number;
+  // Volatile (speculative) market
+  market_volatile_index:      number;
+  market_volatile_trend:      number;
+  market_volatile_volatility: number;
+  // History + highlights
+  market_history:   MarketHistoryEntry[];
+  market_highlights: MarketHighlights | Record<string, never>;
+  market_member_counts: { stable: number; standard: number; volatile: number };
+  // World state
   tick_count:               number;
   total_deaths:             number;
   current_year:             number;

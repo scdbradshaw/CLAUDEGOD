@@ -124,9 +124,22 @@ model World {
   current_year              Int    @default(1)
   tick_count                Int    @default(0)
   total_deaths              Int    @default(0)
-  market_index              Float  @default(100.0)
-  market_trend              Float  @default(0.015)
-  market_volatility         Float  @default(0.03)
+  /// Standard (index) market — used as the default wealth-drift baseline.
+  market_index              Float  @default(1.0)
+  market_trend              Float  @default(0.018)
+  market_volatility         Float  @default(0.05)
+  /// Stable (bonds) market — low volatility, steady long-term upside.
+  market_stable_index       Float  @default(1.0)
+  market_stable_trend       Float  @default(0.012)
+  market_stable_volatility  Float  @default(0.015)
+  /// Volatile (speculative) market — high risk, high reward.
+  market_volatile_index     Float  @default(1.0)
+  market_volatile_trend     Float  @default(0.04)
+  market_volatile_volatility Float @default(0.20)
+  /// Rolling last-100-tick history: [{tick, stable, standard, volatile}]
+  market_history            Json   @default("[]")
+  /// Last-tick market highlights: gains/losses per bucket + top gainer/loser names
+  market_highlights         Json   @default("{}")
   /// Flat map of all global trait child values  e.g. { "war.morale": 20 }
   global_traits             Json   @default("{}")
   /// Per-force effect multipliers e.g. { "war": 1.5 }
@@ -211,6 +224,9 @@ model Person {
   physical_appearance String
   /// Floating-point; no enforced upper bound
   wealth              Float  @default(0.0)
+  /// Which of the three markets this person invests in. Assigned at creation
+  /// based on intelligence + cunning traits. 'stable' | 'standard' | 'volatile'
+  market_bucket       String @default("standard")
   /// JSONB map of all 100 survival/philosophy traits (0-100 each)
   traits              Json   @default("{}")
   /// JSONB map of personal global force scores e.g. { "war.morale": 45 }

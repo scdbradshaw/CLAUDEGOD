@@ -116,7 +116,10 @@ const SCALAR_STRING_FIELDS = ['race', 'occupation', 'religion', 'gender'] as con
 const numericOp  = z.enum(['lt', 'lte', 'gt', 'gte']);
 const dotPathRe  = /^(trait|global_score)\..+$/;
 
-const FilterClauseSchema = z.discriminatedUnion('op', [
+// z.discriminatedUnion requires unique discriminator values across all members,
+// but 'lt'/'lte'/'gt'/'gte'/'between' appear in both scalar and dot-path branches.
+// z.union has no such constraint and is otherwise equivalent for validation.
+const FilterClauseSchema = z.union([
   // numeric scalar — single threshold
   z.object({
     field: z.enum(SCALAR_NUMERIC_FIELDS),

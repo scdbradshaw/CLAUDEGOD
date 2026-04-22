@@ -307,6 +307,47 @@ export const BIRTH_TRAIT_VARIANCE = 8;
 /** Race label used when the two parents have different races. */
 export const MIXED_RACE_LABEL = 'Mixed';
 
+// ── Trauma (Round 3) ────────────────────────────────────────
+// A person's `trauma_score` accumulates from negative memory writes,
+// decays yearly, and is subtracted from interaction scores. It's the
+// mechanical reflection of emotional scar tissue — the more that's
+// happened to you, the darker the world rolls for you. Storage is a
+// single float column on Person so bulk decay is one UPDATE.
+
+/** Upper bound for trauma_score; writes clamp on the way in. */
+export const TRAUMA_SCORE_MAX = 100;
+
+/**
+ * Per-memory trauma delta multipliers keyed by EmotionalImpact. Applied
+ * at memory-write time as `delta = mult[impact] * magnitude`. Negative
+ * impacts add, positive impacts heal. Neutral is a no-op.
+ */
+export const TRAUMA_IMPACT_MULTIPLIER: Record<
+  'traumatic' | 'negative' | 'neutral' | 'positive' | 'euphoric',
+  number
+> = {
+  traumatic:  25,
+  negative:    6,
+  neutral:     0,
+  positive:   -3,
+  euphoric:  -10,
+};
+
+/** Fraction of `resilience` trait that mitigates incoming trauma
+ *  accumulation. `incoming *= (1 - resilience * TRAUMA_RESILIENCE_RELIEF)`.
+ *  0.005 → 100 resilience halves the hit; 0 resilience takes the full blow.
+ *  Healing (negative delta) is NOT mitigated — you always fully receive joy. */
+export const TRAUMA_RESILIENCE_RELIEF = 0.005;
+
+/** Fraction of `trauma_score` subtracted from every interaction score roll
+ *  for the subject. 0.5 → 50 trauma = −25 score (subtle; doesn't overwhelm). */
+export const TRAUMA_SCORE_PENALTY = 0.5;
+
+/** Multiplier applied each year-boundary tick: `trauma_score *= TRAUMA_ANNUAL_DECAY`.
+ *  0.93 → ~7% annual fade; a single severe event becomes ordinary over ~10 years
+ *  if no reinforcement arrives. */
+export const TRAUMA_ANNUAL_DECAY = 0.93;
+
 export interface RulesetDef {
   version:           number;
   interaction_types: InteractionTypeDef[];
@@ -462,6 +503,11 @@ export interface Person {
   // ── Vital stat ───────────────────────────────────────────
   /// Life/death column, synced from traits.health. 0 = dead.
   health:              number;
+
+  // ── Trauma (Round 3) ─────────────────────────────────────
+  /// Emotional scar tissue 0-100; accumulates from negative memories,
+  /// decays annually, subtracted from interaction scoring.
+  trauma_score:        number;
 
   // ── Other ────────────────────────────────────────────────
   physical_appearance: string;

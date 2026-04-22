@@ -200,6 +200,13 @@ model Person {
   /// can use the index without parsing JSONB.
   health Int @default(100) // 0-100
 
+  // ── Trauma (Round 3) ─────────────────────────────────────
+  /// Emotional scar tissue accumulated from negative memory writes and
+  /// decayed annually on the year-boundary tick. Affects interaction
+  /// scoring as a flat subtrahend — a traumatized person's world darkens.
+  /// 0-100. Stored as a column (not JSONB) so bulk decay is one UPDATE.
+  trauma_score Float @default(0)
+
   // ── Other ────────────────────────────────────────────────
   physical_appearance String
   /// Floating-point; no enforced upper bound

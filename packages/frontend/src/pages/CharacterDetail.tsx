@@ -145,11 +145,28 @@ export default function CharacterDetail() {
           <div className="panel p-4 space-y-4">
             <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest">Identity Attributes</h2>
 
-            {/* Health (column, not trait) */}
+            {/* Health (column, not trait) + Trauma (Round 3) */}
             <div>
               <span className="text-[10px] text-red-400 uppercase tracking-widest font-semibold">Vital</span>
-              <div className="mt-2">
+              <div className="mt-2 space-y-1.5">
                 <StatBar label="Health" value={person.health} />
+                {/* Trauma is inverted — high = bad — so it gets its own
+                    dim-to-bright red bar rather than StatBar's green/amber/red. */}
+                <div className="grid grid-cols-[5rem_1fr_auto] items-center gap-2">
+                  <span className="text-[10px] text-muted uppercase tracking-widest truncate">Trauma</span>
+                  <div className="stat-bar-track">
+                    <div
+                      className="h-full rounded-full transition-all duration-500 bg-red-600"
+                      style={{
+                        width:   `${Math.min(100, Math.max(0, person.trauma_score))}%`,
+                        opacity: 0.35 + Math.min(0.65, person.trauma_score / 100 * 0.65),
+                      }}
+                    />
+                  </div>
+                  <span className="text-[11px] font-medium w-7 text-right tabular-nums text-red-400">
+                    {Math.round(person.trauma_score)}
+                  </span>
+                </div>
               </div>
             </div>
 

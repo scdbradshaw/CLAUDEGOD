@@ -61,7 +61,7 @@ Scope:
 
 ---
 
-## Round 3 — Trauma modifier
+## Round 3 — Trauma modifier ✅
 
 **Goal:** persistent emotional scar tissue that modulates future interaction
 outcomes, so a character's history actually shapes who they become.

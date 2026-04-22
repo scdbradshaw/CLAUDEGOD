@@ -17,6 +17,11 @@
 
 import { Prisma, PrismaClient, Tone, EmotionalImpact, PopulationTier } from '@prisma/client';
 import prisma from '../db/client';
+import {
+  TRAUMA_IMPACT_MULTIPLIER,
+  TRAUMA_RESILIENCE_RELIEF,
+  TRAUMA_SCORE_MAX,
+} from '@civ-sim/shared';
 
 // A Prisma transaction client OR the default prisma instance. Every write
 // accepts either so callers can batch inside an existing $transaction.
@@ -145,6 +150,9 @@ export async function writeMemory(tx: Tx, input: MemoryWriteInput): Promise<void
       decade_of_life:   decadeOfLife,
     },
   });
+
+  // Round 3 — Trauma accumulation (same path as the batch writer).
+  await applyTraumaFromMemories(tx, [input]);
 }
 
 export async function writeMemoriesBatch(tx: Tx, inputs: MemoryWriteInput[]): Promise<void> {
@@ -169,6 +177,71 @@ export async function writeMemoriesBatch(tx: Tx, inputs: MemoryWriteInput[]): Pr
         m.ageAtEvent !== undefined ? Math.floor(m.ageAtEvent / 10) : null,
     })),
   });
+
+  // Round 3 — Trauma accumulation. Every memory's (impact, magnitude) pair
+  // produces a trauma delta; resilience dampens the inbound hit (but not
+  // the healing from euphoric/positive events). We aggregate per person
+  // into a single UPDATE so the tick hot loop stays cheap.
+  await applyTraumaFromMemories(tx, inputs);
+}
+
+/**
+ * Compute the raw trauma delta for a single memory *before* resilience
+ * relief is applied. Callers that want to preview the scar-tissue impact
+ * of a hypothetical memory can use this directly; the batch writer wraps
+ * it with per-person resilience lookup and clamping.
+ */
+export function rawTraumaDeltaForMemory(impact: EmotionalImpact, magnitude: number): number {
+  const mult = TRAUMA_IMPACT_MULTIPLIER[impact] ?? 0;
+  return mult * Math.max(0, Math.min(1, magnitude));
+}
+
+/**
+ * Aggregate trauma deltas by person and persist. Looks up each affected
+ * person's current resilience + trauma_score once, applies resilience
+ * relief to *incoming* (positive) deltas only, clamps to [0, TRAUMA_SCORE_MAX],
+ * and writes back in one UPDATE per person via unnest() bulk SQL.
+ *
+ * Split out from writeMemoriesBatch so the births service and any future
+ * direct writer can reach the same trauma-update path.
+ */
+async function applyTraumaFromMemories(tx: Tx, inputs: MemoryWriteInput[]): Promise<void> {
+  // Aggregate raw deltas by person
+  const rawByPerson = new Map<string, number>();
+  for (const m of inputs) {
+    const d = rawTraumaDeltaForMemory(m.emotionalImpact, m.magnitude);
+    if (d === 0) continue;
+    rawByPerson.set(m.personId, (rawByPerson.get(m.personId) ?? 0) + d);
+  }
+  if (rawByPerson.size === 0) return;
+
+  const personIds = [...rawByPerson.keys()];
+  const rows = await tx.person.findMany({
+    where:  { id: { in: personIds } },
+    select: { id: true, trauma_score: true, traits: true },
+  });
+
+  const updates: { id: string; next: number }[] = [];
+  for (const row of rows) {
+    const traits = (row.traits ?? {}) as Record<string, number>;
+    const resilience = typeof traits.resilience === 'number' ? traits.resilience : 50;
+    const raw = rawByPerson.get(row.id) ?? 0;
+    // Resilience dampens accumulation only — joy heals fully regardless.
+    const relief = raw > 0 ? 1 - resilience * TRAUMA_RESILIENCE_RELIEF : 1;
+    const effective = raw * Math.max(0, relief);
+    const next = Math.max(0, Math.min(TRAUMA_SCORE_MAX, row.trauma_score + effective));
+    if (next !== row.trauma_score) updates.push({ id: row.id, next });
+  }
+  if (updates.length === 0) return;
+
+  // One round-trip regardless of N.
+  await tx.$executeRaw`
+    UPDATE persons p SET
+      trauma_score = (u.updates->>'next')::float,
+      updated_at   = NOW()
+    FROM jsonb_array_elements(${JSON.stringify(updates)}::jsonb) AS u(updates)
+    WHERE p.id = (u.updates->>'id')::uuid
+  `;
 }
 
 // ── writeGroupMemory ────────────────────────────────────────

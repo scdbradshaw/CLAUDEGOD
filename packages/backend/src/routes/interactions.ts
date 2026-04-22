@@ -10,6 +10,8 @@ import {
   ALL_IDENTITY_KEYS,
   DEFAULT_GLOBAL_TRAIT_MULTIPLIERS,
   PREGNANCY_DURATION_TICKS,
+  TRAUMA_SCORE_PENALTY,
+  TRAUMA_ANNUAL_DECAY,
   type GlobalTraitSet,
   type RulesetDef,
   type InteractionTypeDef,
@@ -232,6 +234,8 @@ type LivingPerson = {
   global_scores:       Prisma.JsonValue;
   /** Life/death column — synced from traits.health. */
   health:              number;
+  /** Round 3 — emotional scar tissue; subtracted from interaction score. */
+  trauma_score:        number;
   relationship_status: string;
   criminal_record:     Prisma.JsonValue;
 };
@@ -300,6 +304,7 @@ router.post('/tick', async (_req: Request, res: Response) => {
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
         traits: true, global_scores: true, health: true,
+        trauma_score: true,
         // agentic turn reads relationship_status and criminal_record
         relationship_status: true, criminal_record: true,
       },
@@ -393,7 +398,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
       // 3a. Grudge / loyalty weighting — recent memories between these two
       const grudgeBonus = await computeGrudgeBonus(protagonist.id, antagonist.id);
 
-      const score = computeScore(iType, protagTraits, globalTraits, traitMults, grudgeBonus);
+      const traumaPenalty = Math.round(protagonist.trauma_score * TRAUMA_SCORE_PENALTY);
+      const score = computeScore(iType, protagTraits, globalTraits, traitMults, grudgeBonus) - traumaPenalty;
       const band  = findBand(score, rules.outcome_bands);
 
       if (!topScores[iType.id] || score > topScores[iType.id].score) {
@@ -724,6 +730,13 @@ router.post('/tick', async (_req: Request, res: Response) => {
           AND (${newYear}::int - world_year) > (magnitude * 20 + 3)::int
       `;
 
+      // 7a.i. Round 3 — annual trauma decay. Scar tissue fades with time.
+      // Stops at 0; reinforcement comes from new negative memory writes.
+      await prisma.$executeRaw`
+        UPDATE persons SET trauma_score = GREATEST(0, trauma_score * ${TRAUMA_ANNUAL_DECAY})
+        WHERE world_id = ${world.id}::uuid AND trauma_score > 0
+      `;
+
       // 7b. Membership drop-off — anyone whose alignment has drifted below
       // MIN_ALIGNMENT_RETAIN leaves their group. Runs only on year-boundary
       // ticks so churn is annual, not per-tick.
@@ -991,14 +1004,14 @@ router.post('/force', async (req: Request, res: Response) => {
       where: { id: subject_id },
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
-        traits: true, global_scores: true, health: true,
+        traits: true, global_scores: true, health: true, trauma_score: true,
       },
     }),
     prisma.person.findUnique({
       where: { id: antagonist_id },
       select: {
         id: true, name: true, wealth: true, age: true, death_age: true,
-        traits: true, global_scores: true, health: true,
+        traits: true, global_scores: true, health: true, trauma_score: true,
       },
     }),
   ]);
@@ -1028,9 +1041,10 @@ router.post('/force', async (req: Request, res: Response) => {
     : DEFAULT_GLOBAL_TRAIT_MULTIPLIERS;
 
   // Score
-  const grudgeBonus  = await computeGrudgeBonus(subject.id, antagonist.id);
+  const grudgeBonus   = await computeGrudgeBonus(subject.id, antagonist.id);
   const subjectTraits = (subject.traits ?? {}) as TraitSet;
-  const score         = computeScore(iType, subjectTraits, globalTraits, traitMults, grudgeBonus);
+  const traumaPenalty = Math.round((subject.trauma_score ?? 0) * TRAUMA_SCORE_PENALTY);
+  const score         = computeScore(iType, subjectTraits, globalTraits, traitMults, grudgeBonus) - traumaPenalty;
   const band          = findBand(score, rules.outcome_bands);
 
   // Effects — unified traitDeltas accumulator

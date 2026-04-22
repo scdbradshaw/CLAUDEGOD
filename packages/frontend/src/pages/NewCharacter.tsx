@@ -196,6 +196,7 @@ export default function NewCharacter() {
       criminal_record: [],
       traits:          {},
       global_scores:   {},
+      trauma_score:    0,
     }),
     onSuccess: (person) => {
       qc.invalidateQueries({ queryKey: ['characters'] });

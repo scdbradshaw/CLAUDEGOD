@@ -5,47 +5,148 @@
 @layer base {
   body {
     @apply bg-surface text-gray-100 font-mono antialiased;
-    background-image: radial-gradient(ellipse 90% 50% at 50% 0%, rgba(30, 18, 6, 0.85) 0%, transparent 70%);
+    /* Warm vignette from top — amber ember glow */
+    background-image:
+      radial-gradient(ellipse 80% 40% at 50% 0%, rgba(40, 24, 4, 0.9) 0%, transparent 70%),
+      radial-gradient(ellipse 60% 30% at 50% 100%, rgba(10, 8, 4, 0.6) 0%, transparent 70%);
     background-attachment: fixed;
   }
 
-  ::-webkit-scrollbar {
-    @apply w-1.5 h-1.5;
-  }
-  ::-webkit-scrollbar-track  { background: #0d1117; }
-  ::-webkit-scrollbar-thumb  { @apply bg-border rounded-full; }
-  ::-webkit-scrollbar-thumb:hover { @apply bg-muted; }
+  /* Grimoire scrollbars — warm amber thumb */
+  ::-webkit-scrollbar        { @apply w-1.5 h-1.5; }
+  ::-webkit-scrollbar-track  { background: #080b0f; }
+  ::-webkit-scrollbar-thumb  { background: #3a2e14; border-radius: 999px; }
+  ::-webkit-scrollbar-thumb:hover { background: #c9a432; }
+
+  ::selection { background: rgba(201, 164, 50, 0.25); color: #e0bc50; }
 }
 
 @layer components {
+
+  /* ── Panels ──────────────────────────────────────────────── */
   .panel {
-    @apply bg-panel border border-border rounded-lg shadow-lg shadow-black/40;
+    @apply bg-panel border border-border rounded-lg shadow-xl shadow-black/60;
+  }
+  .panel-warm {
+    @apply bg-panel-warm border border-border-warm rounded-lg shadow-xl shadow-black/60;
   }
 
+  /* ── Inputs ──────────────────────────────────────────────── */
+  .input-base {
+    @apply w-full bg-surface border border-border rounded px-3 py-1.5
+           text-xs text-gray-200 placeholder-muted
+           focus:outline-none focus:border-gold/60 transition-colors;
+  }
+  .input-sm {
+    @apply bg-surface border border-border rounded px-2 py-1
+           text-xs text-gray-200 placeholder-muted
+           focus:outline-none focus:border-gold/60 transition-colors;
+  }
+
+  /* ── Stat bar track ──────────────────────────────────────── */
   .stat-bar-track {
-    @apply h-1.5 w-full rounded-full bg-gray-800 overflow-hidden;
+    @apply h-1.5 w-full rounded-full overflow-hidden;
+    background: rgba(255,255,255,0.05);
   }
 
+  /* ── Buttons ─────────────────────────────────────────────── */
   .btn {
-    @apply px-3 py-1.5 rounded text-xs font-medium transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed;
+    @apply px-3 py-1.5 rounded text-xs font-medium transition-colors duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
   }
-  .btn-ghost  { @apply btn bg-transparent border border-border hover:bg-gray-800 text-muted hover:text-gray-100; }
-  .btn-danger { @apply btn bg-red-900/50 border border-red-700 hover:bg-red-800 text-red-300; }
-  .btn-god    { @apply btn bg-amber-900/50 border border-amber-600 hover:bg-amber-800 text-amber-300; }
-  .btn-sim    { @apply btn bg-emerald-900/50 border border-emerald-700 hover:bg-emerald-800 text-emerald-300; }
+  .btn-ghost  {
+    @apply btn bg-transparent border border-border hover:border-border-warm
+           text-muted hover:text-gray-100;
+  }
+  .btn-danger {
+    @apply btn bg-blood/20 border border-blood/60 hover:bg-blood/40 text-red-300;
+  }
+  .btn-god    {
+    @apply btn bg-gold-dim/40 border border-gold/60 hover:bg-gold-dim/70 text-amber-200;
+  }
+  .btn-sim    {
+    @apply btn bg-emerald-900/40 border border-emerald-700/70 hover:bg-emerald-800/60 text-emerald-300;
+  }
+  .btn-rune   {
+    @apply btn bg-rune/10 border border-rune/40 hover:bg-rune/20 text-violet-300;
+  }
+  .btn-ember  {
+    @apply btn bg-ember/15 border border-ember/50 hover:bg-ember/30 text-orange-300;
+  }
 
+  /* ── Tags / pills ────────────────────────────────────────── */
   .tag {
     @apply inline-block px-1.5 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider;
+  }
+
+  /* ── Labels (replaces text-[10px] uppercase tracking-widest) */
+  .label {
+    @apply text-[10px] text-muted uppercase tracking-widest;
+  }
+
+  /* ── Section divider with ornament ──────────────────────── */
+  .divider {
+    @apply flex items-center gap-3 my-4;
+  }
+  .divider::before,
+  .divider::after {
+    content: '';
+    @apply flex-1 h-px bg-border;
+  }
+  .divider-text {
+    @apply text-[10px] text-gold-dim uppercase tracking-[0.25em];
+  }
+
+  /* ── Page container ──────────────────────────────────────── */
+  .page {
+    @apply min-h-screen p-6 max-w-7xl mx-auto;
+  }
+  .page-narrow {
+    @apply min-h-screen p-6 max-w-4xl mx-auto;
+  }
+  .page-mid {
+    @apply min-h-screen p-6 max-w-5xl mx-auto;
+  }
+
+  /* ── Page heading ────────────────────────────────────────── */
+  .page-title {
+    @apply font-display text-3xl font-bold text-gold tracking-widest uppercase leading-tight;
+  }
+  .page-subtitle {
+    @apply text-[11px] text-muted mt-1 tracking-wide;
+  }
+
+  /* ── Force color accents (semantic tokens) ───────────────── */
+  .force-scarcity  { @apply text-amber-400;  }
+  .force-war       { @apply text-red-400;    }
+  .force-faith     { @apply text-violet-400; }
+  .force-plague    { @apply text-green-400;  }
+  .force-tyranny   { @apply text-orange-400; }
+  .force-discovery { @apply text-sky-400;    }
+
+  /* ── Ornamental border for special panels ────────────────── */
+  .panel-illuminated {
+    @apply panel;
+    border-color: theme('colors.gold-dim');
+    box-shadow: 0 0 0 1px rgba(201,164,50,0.08), 0 20px 40px rgba(0,0,0,0.6);
+  }
+
+  /* ── Chronicle / story feed entry ───────────────────────── */
+  .story-card {
+    @apply panel p-5 space-y-3 cursor-pointer
+           hover:border-border-warm transition-colors duration-150;
   }
 }
 
 @layer utilities {
+  /* Range input thumb — warm amber */
   input[type='range']::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 12px;
     height: 12px;
     border-radius: 50%;
-    background: #8b949e;
+    background: #5e4a18;
+    border: 1px solid #c9a432;
     cursor: pointer;
     margin-top: -5px;
     transition: background 0.15s;
@@ -55,6 +156,13 @@
   }
   input[type='range']::-webkit-slider-runnable-track {
     height: 2px;
-    background: transparent;
+    background: rgba(255,255,255,0.06);
+    border-radius: 2px;
   }
+
+  /* Text utilities */
+  .text-gold-bright { color: theme('colors.gold-bright'); }
+  .text-parchment   { color: theme('colors.parchment');   }
+  .text-rune        { color: theme('colors.rune');         }
+  .text-ember       { color: theme('colors.ember');        }
 }

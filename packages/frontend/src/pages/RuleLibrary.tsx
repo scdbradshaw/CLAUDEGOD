@@ -3,7 +3,6 @@
 // ============================================================
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { RulesetListItem } from '../api/client';
@@ -48,9 +47,6 @@ export default function RuleLibrary() {
               Manage interaction rulesets — activate to apply to the current world
             </p>
           </div>
-          <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">
-            ← Dashboard
-          </Link>
         </div>
       </header>
 

@@ -4,7 +4,6 @@
 
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { api, type RipListParams } from '../api/client';
 import type { DeceasedPerson } from '@civ-sim/shared';
 
@@ -99,21 +98,16 @@ export default function Rip() {
   const hasFilters = yearMin !== '' || yearMax !== '' || cause !== '' || sort !== 'died_at' || order !== 'desc';
 
   return (
-    <div className="min-h-screen p-6 max-w-5xl mx-auto space-y-6">
+    <div className="page space-y-6">
 
       {/* ── Header ── */}
-      <header className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="font-display text-3xl font-bold text-zinc-400 tracking-widest uppercase">
-            The Fallen
-          </h1>
-          <p className="text-[11px] text-muted mt-1 tracking-wide">
-            {cityName
-              ? `Obituaries of ${cityName} — ${total} soul${total !== 1 ? 's' : ''}${hasFilters ? ' in view' : ' remembered'}`
-              : `${total} soul${total !== 1 ? 's' : ''} remembered`}
-          </p>
-        </div>
-        <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 mt-1">← Realm</Link>
+      <header>
+        <h1 className="page-title">The Fallen</h1>
+        <p className="page-subtitle">
+          {cityName
+            ? `Obituaries of ${cityName} — ${total} soul${total !== 1 ? 's' : ''}${hasFilters ? ' in view' : ' remembered'}`
+            : `${total} soul${total !== 1 ? 's' : ''} remembered`}
+        </p>
       </header>
 
       {/* ── Filter bar ── */}

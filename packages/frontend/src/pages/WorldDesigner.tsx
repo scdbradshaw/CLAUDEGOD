@@ -3,7 +3,6 @@
 // ============================================================
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
 import { useState } from 'react';
 import { api } from '../api/client';
 import type { WorldListItem, PopulationTier } from '@civ-sim/shared';
@@ -267,9 +266,6 @@ export default function WorldDesigner() {
               Create and switch between parallel worlds — only one can be active at a time
             </p>
           </div>
-          <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors mt-1">
-            ← Dashboard
-          </Link>
         </div>
       </header>
 

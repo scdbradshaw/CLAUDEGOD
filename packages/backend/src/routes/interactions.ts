@@ -383,6 +383,18 @@ router.post('/tick', async (_req: Request, res: Response) => {
       }
     }));
 
+    // 5e. Critical health — persons at 1-9 HP face a mortal risk each tick.
+    //     Linear chance: hp=1→36%, hp=5→20%, hp=9→4%. health=0 is caught below.
+    for (const p of living) {
+      const hp = finalHealth[p.id];
+      if (hp > 0 && hp < 10) {
+        const deathChance = (10 - hp) / 10 * 0.4;
+        if (Math.random() < deathChance) {
+          finalHealth[p.id] = 0;
+        }
+      }
+    }
+
     // 6. Process interaction deaths — each death runs religion-dissolve
     //    BEFORE the person is deleted so we can still write faith-lost
     //    memories keyed off the founder relation.

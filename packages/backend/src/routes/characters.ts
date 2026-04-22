@@ -3,6 +3,7 @@
 // ============================================================
 
 import { Router, Request, Response } from 'express';
+import { z } from 'zod';
 import prisma from '../db/client';
 import { applyDelta, addCriminalRecord } from '../services/simulation.service';
 import { validate } from '../middleware/validate';
@@ -42,6 +43,10 @@ router.get('/', async (req: Request, res: Response) => {
         wealth:        true,
         updated_at:    true,
         global_scores: true,
+        traits:        true,
+        occupation:    true,
+        race:          true,
+        religion:      true,
       },
     }),
     prisma.person.count({ where: { world_id: world.id } }),
@@ -355,5 +360,53 @@ router.delete('/:id', async (req: Request, res: Response) => {
   await prisma.person.delete({ where: { id: req.params.id } });
   res.status(204).send();
 });
+
+// ── POST /api/characters/bulk-kill ───────────────────────────
+// Randomly selects N living persons and kills them (god mode).
+// Creates DeceasedPerson records + updates world death count.
+router.post('/bulk-kill',
+  validate(z.object({ count: z.number().int().min(1).max(1000) })),
+  async (req: Request, res: Response) => {
+    const world = await getActiveWorld();
+
+    const targets = await prisma.$queryRaw<
+      Array<{ id: string; name: string; age: number; wealth: number }>
+    >`
+      SELECT id, name, age, wealth
+      FROM persons
+      WHERE world_id = ${world.id}::uuid AND health > 0
+      ORDER BY RANDOM()
+      LIMIT ${req.body.count}
+    `;
+
+    if (targets.length === 0) {
+      res.json({ killed: 0, names: [] });
+      return;
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.deceasedPerson.createMany({
+        data: targets.map((p) => ({
+          name:         p.name,
+          age_at_death: p.age,
+          world_year:   world.current_year,
+          cause:        'god_mode',
+          final_health: 0,
+          final_wealth: p.wealth,
+          world_id:     world.id,
+        })),
+      });
+      await tx.person.deleteMany({
+        where: { id: { in: targets.map((t) => t.id) } },
+      });
+      await tx.world.update({
+        where: { id: world.id },
+        data:  { total_deaths: { increment: targets.length } },
+      });
+    });
+
+    res.json({ killed: targets.length, names: targets.map((t) => t.name) });
+  },
+);
 
 export default router;

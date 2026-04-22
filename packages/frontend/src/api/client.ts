@@ -138,6 +138,12 @@ export const api = {
     delete: (id: string) =>
       request<void>(`/characters/${id}`, { method: 'DELETE' }),
 
+    bulkKill: (count: number) =>
+      request<{ killed: number; names: string[] }>('/characters/bulk-kill', {
+        method: 'POST',
+        body:   JSON.stringify({ count }),
+      }),
+
     applyDelta: (id: string, body: DeltaRequest) =>
       request<MutationResult>(`/characters/${id}/delta`, {
         method: 'POST',

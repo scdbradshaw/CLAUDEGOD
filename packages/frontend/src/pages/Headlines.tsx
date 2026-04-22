@@ -1,6 +1,7 @@
 // ============================================================
-// HEADLINES PAGE
-// Chronicle archive — annual headlines (10yr) + decade summaries
+// Chronicle — cinematic story feed.
+// Annual + decade view, category filter, generate controls.
+// Stories rendered full-width as scrolling entries, not cards.
 // ============================================================
 
 import { useState } from 'react';
@@ -9,107 +10,101 @@ import { Link } from 'react-router-dom';
 import { api, type Headline, type Tone } from '../api/client';
 import HeadlineGenerator from '../components/HeadlineGenerator';
 
-// ── Category metadata ──────────────────────────────────────────────────────
+// ── Category metadata ──────────────────────────────────────────
 
-const CATEGORY_META: Record<string, { label: string; color: string; icon: string }> = {
-  MOST_DRAMATIC_FALL:  { label: 'Greatest Fall',      color: 'text-red-400',    icon: '↘' },
-  MOST_INSPIRING_RISE: { label: 'Inspiring Rise',     color: 'text-emerald-400',icon: '↗' },
-  GREATEST_VILLAIN:    { label: 'Greatest Villain',   color: 'text-purple-400', icon: '☠' },
-  MOST_TRAGIC:         { label: 'Most Tragic',        color: 'text-blue-400',   icon: '✦' },
-  BEST_LOVE_STORY:     { label: 'Love Story',         color: 'text-pink-400',   icon: '♥' },
-  MOST_CRIMINAL:       { label: 'Most Criminal',      color: 'text-orange-400', icon: '⚖' },
-  RAGS_TO_RICHES:      { label: 'Rags to Riches',     color: 'text-yellow-400', icon: '◆' },
-  RICHES_TO_RAGS:      { label: 'Riches to Rags',     color: 'text-zinc-400',   icon: '◇' },
-  MOST_INFLUENTIAL:    { label: 'Most Influential',   color: 'text-cyan-400',   icon: '★' },
-  LONGEST_SURVIVING:   { label: 'Longest Surviving',  color: 'text-lime-400',   icon: '⌛' },
+const CATEGORY_META: Record<string, { label: string; color: string; dimColor: string; icon: string }> = {
+  MOST_DRAMATIC_FALL:  { label: 'Greatest Fall',    color: 'text-red-400',     dimColor: 'text-red-900/80',   icon: '↘' },
+  MOST_INSPIRING_RISE: { label: 'Inspiring Rise',   color: 'text-emerald-400', dimColor: 'text-emerald-900/80', icon: '↗' },
+  GREATEST_VILLAIN:    { label: 'Greatest Villain', color: 'text-rune',        dimColor: 'text-rune/30',      icon: '☠' },
+  MOST_TRAGIC:         { label: 'Most Tragic',      color: 'text-blue-400',    dimColor: 'text-blue-900/80',  icon: '✦' },
+  BEST_LOVE_STORY:     { label: 'Love Story',       color: 'text-pink-400',    dimColor: 'text-pink-900/80',  icon: '♥' },
+  MOST_CRIMINAL:       { label: 'Most Criminal',    color: 'text-ember',       dimColor: 'text-ember/30',     icon: '⚖' },
+  RAGS_TO_RICHES:      { label: 'Rags to Riches',   color: 'text-gold',        dimColor: 'text-gold-dim',     icon: '◆' },
+  RICHES_TO_RAGS:      { label: 'Riches to Rags',   color: 'text-muted',       dimColor: 'text-muted/30',     icon: '◇' },
+  MOST_INFLUENTIAL:    { label: 'Most Influential', color: 'text-sky-400',     dimColor: 'text-sky-900/80',   icon: '★' },
+  LONGEST_SURVIVING:   { label: 'Longest Surviving',color: 'text-lime-400',    dimColor: 'text-lime-900/80',  icon: '⌛' },
 };
 
-// ── Tone metadata ──────────────────────────────────────────────────────────
-// Colors pulled to give each voice a distinct chip — tabloid = hot pink
-// (scandal), literary = slate (restraint), epic = amber (mythic gold),
-// reportage = sky (newsprint blue), neutral = zinc (plain log).
-
-const TONE_META: Record<Tone, { label: string; className: string }> = {
-  tabloid:   { label: 'Tabloid',   className: 'bg-pink-500/10   text-pink-300   border-pink-500/30'   },
-  literary:  { label: 'Literary',  className: 'bg-slate-500/10  text-slate-300  border-slate-500/30'  },
-  epic:      { label: 'Epic',      className: 'bg-amber-500/10  text-amber-300  border-amber-500/30'  },
-  reportage: { label: 'Reportage', className: 'bg-sky-500/10    text-sky-300    border-sky-500/30'    },
-  neutral:   { label: 'Neutral',   className: 'bg-zinc-500/10   text-zinc-400   border-zinc-500/30'   },
+const TONE_META: Record<Tone, { label: string; cls: string }> = {
+  tabloid:   { label: 'Tabloid',   cls: 'bg-pink-500/10   text-pink-300   border-pink-500/30'   },
+  literary:  { label: 'Literary',  cls: 'bg-slate-500/10  text-slate-300  border-slate-500/30'  },
+  epic:      { label: 'Epic',      cls: 'bg-amber-500/10  text-amber-300  border-amber-500/30'  },
+  reportage: { label: 'Reportage', cls: 'bg-sky-500/10    text-sky-300    border-sky-500/30'    },
+  neutral:   { label: 'Neutral',   cls: 'bg-zinc-500/10   text-zinc-400   border-zinc-500/30'   },
 };
 
-function TonePill({ tone }: { tone?: Tone }) {
-  if (!tone) return null;
-  const meta = TONE_META[tone] ?? TONE_META.neutral;
-  return (
-    <span
-      className={`inline-flex items-center text-[9px] uppercase tracking-widest px-1.5 py-0.5 border rounded ${meta.className}`}
-      title={`Narrative voice: ${meta.label.toLowerCase()}`}
-    >
-      {meta.label}
-    </span>
-  );
-}
+// ── StoryEntry ─────────────────────────────────────────────────
+// Full-width cinematic entry — glyph left, prose right.
 
-// ── HeadlineCard ───────────────────────────────────────────────────────────
-
-function HeadlineCard({ h }: { h: Headline }) {
-  const [expanded, setExpanded] = useState(false);
-  const meta = CATEGORY_META[h.category] ?? { label: h.category, color: 'text-zinc-400', icon: '◉' };
+function StoryEntry({ h }: { h: Headline }) {
+  const meta = CATEGORY_META[h.category] ?? { label: h.category, color: 'text-muted', dimColor: 'text-muted/30', icon: '◉' };
+  const tone = h.tone ? (TONE_META[h.tone] ?? TONE_META.neutral) : null;
 
   return (
-    <div
-      className="panel cursor-pointer hover:border-zinc-600 transition-colors"
-      onClick={() => setExpanded(x => !x)}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className={`text-lg shrink-0 ${meta.color}`}>{meta.icon}</span>
-          <div className="min-w-0">
-            <div className="flex items-center gap-2 mb-0.5">
-              <p className={`text-[10px] uppercase tracking-widest ${meta.color}`}>{meta.label}</p>
-              <TonePill tone={h.tone} />
-            </div>
-            <p className="text-sm font-semibold text-white leading-snug">{h.headline}</p>
-            {h.person_name && (
-              <p className="text-xs text-zinc-500 mt-0.5">
-                {h.person_id
-                  ? <Link to={`/characters/${h.person_id}`} onClick={e => e.stopPropagation()} className="hover:text-amber-400 transition-colors">{h.person_name}</Link>
-                  : h.person_name
-                }
-              </p>
-            )}
-          </div>
-        </div>
-        <span className="text-zinc-600 text-xs shrink-0">{expanded ? '▲' : '▼'}</span>
+    <article className="group flex gap-5 py-7 border-b border-border/60 last:border-0">
+
+      {/* Left glyph column */}
+      <div className="shrink-0 w-10 flex flex-col items-center pt-1 gap-1.5">
+        <span className={`text-2xl leading-none ${meta.color}`}>{meta.icon}</span>
+        <span className="w-px flex-1 bg-border/40 min-h-[1.5rem]" />
       </div>
 
-      {expanded && (
-        <p className="text-xs text-zinc-400 leading-relaxed mt-3 border-t border-zinc-700 pt-3">
-          {h.story}
-        </p>
-      )}
-    </div>
+      {/* Main content */}
+      <div className="flex-1 min-w-0 space-y-2">
+
+        {/* Meta row */}
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={`text-[9px] uppercase tracking-widest font-medium ${meta.color}`}>
+            {meta.label}
+          </span>
+          {tone && (
+            <span className={`inline-flex items-center text-[9px] uppercase tracking-widest px-1.5 py-0.5 border rounded ${tone.cls}`}>
+              {tone.label}
+            </span>
+          )}
+        </div>
+
+        {/* Headline */}
+        <h2 className="font-display text-base sm:text-lg font-semibold text-gray-100 leading-snug
+                       group-hover:text-gold transition-colors">
+          {h.headline}
+        </h2>
+
+        {/* Person byline */}
+        {h.person_name && (
+          <p className="text-[10px] text-muted">
+            {h.person_id
+              ? <Link to={`/characters/${h.person_id}`} className="hover:text-gold transition-colors">{h.person_name}</Link>
+              : h.person_name
+            }
+          </p>
+        )}
+
+        {/* Story prose */}
+        {h.story && (
+          <p className="text-sm text-zinc-400 leading-relaxed max-w-2xl">
+            {h.story}
+          </p>
+        )}
+
+      </div>
+    </article>
   );
 }
 
-// ── GenerateHeadlineForm ───────────────────────────────────────────────────
-// Small inline form on the Chronicle toolbar — picks a year (or decade start)
-// based on the active view and enqueues a headline generation job.
+// ── GenerateForm ───────────────────────────────────────────────
 
-function GenerateHeadlineForm({ view, currentYear }: { view: 'ANNUAL' | 'DECADE'; currentYear: number }) {
-  const defaultYear   = Math.max(1, currentYear - 1);
-  const defaultDecade = Math.floor(Math.max(0, currentYear - 10) / 10) * 10;
-  const [year, setYear]     = useState(defaultYear);
-  const [decade, setDecade] = useState(defaultDecade);
+function GenerateForm({ view, currentYear }: { view: 'ANNUAL' | 'DECADE'; currentYear: number }) {
+  const [year,   setYear]   = useState(Math.max(1, currentYear - 1));
+  const [decade, setDecade] = useState(Math.floor(Math.max(0, currentYear - 10) / 10) * 10);
 
   if (view === 'ANNUAL') {
     return (
-      <div className="flex items-center gap-2 ml-auto">
+      <div className="flex items-center gap-2">
         <input
-          type="number" min={1} max={currentYear - 1}
-          value={year}
+          type="number" min={1} max={currentYear - 1} value={year}
           onChange={e => setYear(Math.max(1, Math.min(currentYear - 1, parseInt(e.target.value) || 1)))}
-          className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500 text-center"
+          className="input-sm w-20 text-center"
         />
         <HeadlineGenerator target={{ kind: 'year', value: year }} compact />
       </div>
@@ -117,27 +112,23 @@ function GenerateHeadlineForm({ view, currentYear }: { view: 'ANNUAL' | 'DECADE'
   }
 
   return (
-    <div className="flex items-center gap-2 ml-auto">
+    <div className="flex items-center gap-2">
       <input
-        type="number" min={0} step={10} max={currentYear - 10}
-        value={decade}
+        type="number" min={0} step={10} max={currentYear - 10} value={decade}
         onChange={e => setDecade(Math.max(0, parseInt(e.target.value) || 0))}
-        className="w-20 bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-xs text-white focus:outline-none focus:border-amber-500 text-center"
+        className="input-sm w-20 text-center"
       />
-      <span className="text-[10px] text-zinc-500">s</span>
+      <span className="text-[10px] text-muted">s</span>
       <HeadlineGenerator target={{ kind: 'decade', value: decade }} compact />
     </div>
   );
 }
 
-// ── Main page ──────────────────────────────────────────────────────────────
+// ── Main page ──────────────────────────────────────────────────
 
 export default function Headlines() {
-  const [view, setView] = useState<'ANNUAL' | 'DECADE'>('ANNUAL');
-  const [filterCat, setFilterCat] = useState<string>('');
-  // Round 7 — collapsed state per year key. Most-recent year starts expanded
-  // (see `expandedByDefault` below); everything else collapses until clicked.
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  const [view,      setView]      = useState<'ANNUAL' | 'DECADE'>('ANNUAL');
+  const [filterCat, setFilterCat] = useState('');
 
   const { data: timeState } = useQuery({
     queryKey: ['time'],
@@ -146,48 +137,51 @@ export default function Headlines() {
 
   const { data: headlines = [], isLoading } = useQuery({
     queryKey: ['headlines', view, filterCat],
-    queryFn:  () => api.time.headlines({
-      type:     view,
-      category: filterCat || undefined,
-    }),
-    enabled: !!timeState,
+    queryFn:  () => api.time.headlines({ type: view, category: filterCat || undefined }),
+    enabled:  !!timeState,
   });
 
-  // Group annual by year, decade by decade
+  // Group by year / decade, sorted descending
   const grouped = headlines.reduce<Record<number, Headline[]>>((acc, h) => {
     if (!acc[h.year]) acc[h.year] = [];
     acc[h.year].push(h);
     return acc;
   }, {});
-
-  const sortedYears = Object.keys(grouped).map(Number).sort((a, b) => b - a);
+  const sortedPeriods = Object.keys(grouped).map(Number).sort((a, b) => b - a);
 
   return (
-    <div className="min-h-screen p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="page space-y-6">
+
+      {/* ── Header ── */}
+      <header className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
         <div>
-          <Link to="/" className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors">← The Realm</Link>
-          <h1 className="text-2xl font-bold text-white mt-1">The Chronicle</h1>
-          <p className="text-sm text-zinc-500">
-            {view === 'ANNUAL' ? 'Annual headlines — last 10 years' : 'Decade summaries — distant history'}
+          <h1 className="page-title">The Chronicle</h1>
+          <p className="page-subtitle">
+            {view === 'ANNUAL' ? 'Annual records of triumph and ruin' : 'Decade summaries — distant history'}
+            {timeState && <> · Year {timeState.current_year}</>}
           </p>
         </div>
-        <span className="text-3xl font-bold text-amber-400">
-          Year {timeState?.current_year ?? '…'}
-        </span>
-      </div>
 
-      {/* Controls */}
+        {/* Generate controls */}
+        {timeState && timeState.current_year > 1 && (
+          <div className="shrink-0">
+            <GenerateForm view={view} currentYear={timeState.current_year} />
+          </div>
+        )}
+      </header>
+
+      {/* ── Toolbar ── */}
       <div className="flex flex-wrap gap-3 items-center">
         {/* Annual / Decade toggle */}
-        <div className="flex rounded-lg overflow-hidden border border-zinc-700">
+        <div className="flex rounded overflow-hidden border border-border">
           {(['ANNUAL', 'DECADE'] as const).map(t => (
             <button
               key={t}
               onClick={() => setView(t)}
               className={`px-4 py-1.5 text-xs font-medium transition-colors ${
-                view === t ? 'bg-amber-500 text-black' : 'bg-zinc-800 text-zinc-400 hover:text-white'
+                view === t
+                  ? 'bg-gold/20 text-gold border-r border-border'
+                  : 'bg-transparent text-muted hover:text-gray-300'
               }`}
             >
               {t === 'ANNUAL' ? 'Annual' : 'Decades'}
@@ -199,67 +193,51 @@ export default function Headlines() {
         <select
           value={filterCat}
           onChange={e => setFilterCat(e.target.value)}
-          className="bg-zinc-800 border border-zinc-700 rounded px-3 py-1.5 text-xs text-zinc-300 focus:outline-none focus:border-amber-500"
+          className="input-sm"
         >
           <option value="">All Categories</option>
           {Object.entries(CATEGORY_META).map(([k, v]) => (
             <option key={k} value={k}>{v.icon} {v.label}</option>
           ))}
         </select>
-
-        {/* Generate */}
-        {timeState && timeState.current_year > 1 && (
-          <GenerateHeadlineForm view={view} currentYear={timeState.current_year} />
-        )}
       </div>
 
-      {/* Content */}
+      {/* ── Content ── */}
       {isLoading ? (
-        <p className="text-zinc-500 text-sm animate-pulse">Consulting the archives…</p>
-      ) : sortedYears.length === 0 ? (
-        <div className="panel text-center py-12">
-          <p className="text-zinc-500">No chronicles yet. Advance time to generate headlines.</p>
+        <p className="label animate-pulse text-amber-400/60">Consulting the archives…</p>
+      ) : sortedPeriods.length === 0 ? (
+        <div className="panel p-16 text-center space-y-3">
+          <p className="font-display text-gold text-xl tracking-widest">The Page Is Blank</p>
+          <p className="text-muted text-sm">No chronicles recorded yet.</p>
+          {timeState && timeState.current_year > 1 && (
+            <div className="pt-2">
+              <GenerateForm view={view} currentYear={timeState.current_year} />
+            </div>
+          )}
         </div>
       ) : (
-        <div className="space-y-8">
-          {sortedYears.map((year, idx) => {
-            // Default: first (most recent) section expanded; older sections
-            // collapsed. `collapsed` stores years whose state diverges from
-            // the default, so open = defaultOpen XOR collapsed.has(year).
-            const defaultOpen = idx === 0;
-            const open = defaultOpen !== collapsed.has(year);
-            const toggle = () => setCollapsed(prev => {
-              const next = new Set(prev);
-              if (next.has(year)) next.delete(year);
-              else next.add(year);
-              return next;
-            });
-            return (
-              <section key={year}>
-                <button
-                  type="button"
-                  onClick={toggle}
-                  className="w-full text-xs uppercase tracking-widest text-zinc-500 hover:text-zinc-300 mb-3 flex items-center gap-2 transition-colors"
-                >
-                  <span className="h-px flex-1 bg-zinc-800" />
-                  <span className="flex items-center gap-2">
-                    {view === 'DECADE' ? `${year}s — Decade of ${year}` : `Year ${year}`}
-                    <span className="text-zinc-600">·</span>
-                    <span className="text-zinc-600">{grouped[year].length}</span>
-                    <span className="text-zinc-600">{open ? '▾' : '▸'}</span>
-                  </span>
-                  <span className="h-px flex-1 bg-zinc-800" />
-                </button>
-                {open && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-                    {grouped[year].map(h => <HeadlineCard key={h.id} h={h} />)}
-                  </div>
-                )}
-              </section>
-            );
-          })}
+        <div className="space-y-10">
+          {sortedPeriods.map(period => (
+            <section key={period}>
+              {/* Period divider */}
+              <div className="divider mb-2">
+                <span className="divider-text">
+                  {view === 'DECADE' ? `${period}s` : `Year ${period}`}
+                  <span className="text-zinc-700 ml-2">· {grouped[period].length}</span>
+                </span>
+              </div>
+
+              {/* Stories */}
+              <div>
+                {grouped[period].map(h => (
+                  <StoryEntry key={h.id} h={h} />
+                ))}
+              </div>
+            </section>
+          ))}
         </div>
       )}
+
     </div>
   );
 }

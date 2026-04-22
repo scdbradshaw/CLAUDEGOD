@@ -1,100 +1,113 @@
 // ============================================================
-// CharacterCard — shows identity + 6 global force scores
+// CharacterCard — 5 key stats at a glance.
+// Stats: Health, Morality, Influence, Happiness, Wealth.
+// Click card body to open CharacterDetail.
+// onEdit prop (optional) shows an edit button for quick stat sliders.
 // ============================================================
 
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import type { CharacterListItem } from '@civ-sim/shared';
-import { GLOBAL_TRAITS } from '@civ-sim/shared';
 import StatBar, { statTextColor } from './StatBar';
 
 interface Props {
-  person: CharacterListItem;
+  person:  CharacterListItem;
+  onEdit?: () => void;
 }
 
-const FORCE_BARS: { key: string; label: string; color: string }[] = [
-  { key: 'scarcity',  label: 'Scarcity',  color: 'text-amber-400'  },
-  { key: 'war',       label: 'War',        color: 'text-red-400'    },
-  { key: 'faith',     label: 'Faith',      color: 'text-violet-400' },
-  { key: 'plague',    label: 'Plague',     color: 'text-green-400'  },
-  { key: 'tyranny',   label: 'Tyranny',    color: 'text-orange-400' },
-  { key: 'discovery', label: 'Discovery',  color: 'text-sky-400'    },
-];
-
-/**
- * Normalize a child value to 0-100 based on its defined min/max range.
- * Higher = better (the child is toward its maximum).
- */
-function normalizeChild(force: string, child: string, value: number): number {
-  const def = GLOBAL_TRAITS[force as keyof typeof GLOBAL_TRAITS]?.children[child as never] as
-    { min: number; max: number } | undefined;
-  if (!def || def.max === def.min) return 50;
-  return Math.round(((value - def.min) / (def.max - def.min)) * 100);
+function wealthStr(w: number): string {
+  if (w >= 1_000_000) return `$${(w / 1_000_000).toFixed(1)}M`;
+  if (w >= 1_000)     return `$${(w / 1_000).toFixed(1)}K`;
+  return `$${w.toFixed(0)}`;
 }
 
-/** Composite 0-100 score for a force: average of 4 normalized children */
-function forceScore(force: string, scores: Record<string, number>): number {
-  const children = Object.keys(GLOBAL_TRAITS[force as keyof typeof GLOBAL_TRAITS]?.children ?? {});
-  if (!children.length) return 0;
-  const total = children.reduce((sum, child) => {
-    const val = scores[`${force}.${child}`] ?? 0;
-    return sum + normalizeChild(force, child, val);
-  }, 0);
-  return Math.round(total / children.length);
-}
-
+/** Left border color encodes health at a glance */
 function healthBorder(health: number): string {
-  if (health >= 67) return 'border-l-emerald-600/70 hover:border-l-emerald-500';
-  if (health >= 34) return 'border-l-amber-600/70   hover:border-l-amber-500';
-  return                    'border-l-red-600/70     hover:border-l-red-500';
+  if (health >= 67) return 'border-l-emerald-700/70 hover:border-l-emerald-500';
+  if (health >= 34) return 'border-l-amber-700/70   hover:border-l-amber-500';
+  return                    'border-l-red-700/70     hover:border-l-red-500';
 }
 
-export default function CharacterCard({ person }: Props) {
-  const scores = (person.global_scores as Record<string, number>) ?? {};
+/** Derive the 3 social vitals from traits JSONB */
+function deriveVitals(traits: Record<string, number>) {
+  const avg = (...vals: number[]) => Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
+  return {
+    morality:  avg(traits.honesty ?? 50, traits.courage ?? 50, traits.discipline ?? 50),
+    influence: avg(traits.charisma ?? 50, traits.leadership ?? 50),
+    happiness: avg(traits.humor ?? 50, traits.empathy ?? 50),
+  };
+}
+
+export default function CharacterCard({ person, onEdit }: Props) {
+  const navigate = useNavigate();
+  const traits   = (person.traits ?? {}) as Record<string, number>;
+  const { morality, influence, happiness } = deriveVitals(traits);
+  const wealthPct = Math.min((person.wealth / 50_000) * 100, 100);
 
   return (
-    <Link
-      to={`/characters/${person.id}`}
-      className={`panel block p-4 border-l-2 ${healthBorder(person.health)} hover:border-gray-500 transition-all duration-150 group`}
+    <div
+      onClick={() => navigate(`/characters/${person.id}`)}
+      className={`panel block p-4 border-l-2 ${healthBorder(person.health)}
+                  hover:border-border-warm transition-all duration-150 group space-y-3 cursor-pointer`}
     >
       {/* ── Header ── */}
-      <div className="flex items-start justify-between mb-3">
-        <h2 className="font-display text-sm font-bold text-gray-100 group-hover:text-gold transition-colors leading-snug">
+      <div className="flex items-start justify-between gap-2">
+        <h2 className="font-display text-sm font-bold text-gray-100 group-hover:text-gold
+                       transition-colors leading-snug truncate">
           {person.name}
         </h2>
-        <div className="text-right">
+        <div className="flex items-center gap-1.5 shrink-0">
+          {onEdit && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onEdit(); }}
+              className="text-[10px] text-muted hover:text-gold transition-colors leading-none"
+              title="Edit stats"
+            >
+              ✏
+            </button>
+          )}
           <span className="text-[10px] text-muted">Age {person.age}</span>
         </div>
       </div>
 
-      {/* ── Wealth row ── */}
-      <div className="mb-3 text-[10px]">
-        <span className="text-muted">Wealth </span>
-        <span className={`${statTextColor(Math.min(person.wealth / 1000, 100))} font-medium`}>
-          {person.wealth >= 1_000_000
-            ? `$${(person.wealth / 1_000_000).toFixed(1)}M`
-            : person.wealth >= 1_000
-            ? `$${(person.wealth / 1_000).toFixed(1)}K`
-            : `$${person.wealth.toFixed(0)}`}
-        </span>
-      </div>
+      {/* ── Race + occupation ── */}
+      {(person.race || person.occupation) && (
+        <p className="text-[10px] text-muted leading-none">
+          {person.race}
+          {person.occupation && <> · <span className="text-zinc-500">{person.occupation}</span></>}
+        </p>
+      )}
 
-      {/* ── Divider ── */}
-      <div className="border-t border-border my-2" />
+      {/* ── 5 key stats ── */}
+      <div className="space-y-1.5 pt-1 border-t border-border/40">
+        <StatBar label="Health"    value={person.health} />
+        <StatBar label="Morality"  value={morality}      />
+        <StatBar label="Influence" value={influence}     />
+        <StatBar label="Happiness" value={happiness}     />
 
-      {/* ── 6 global force scores ── */}
-      <div className="space-y-1.5">
-        {FORCE_BARS.map(({ key, label, color }) => (
-          <div key={key} className="flex items-center gap-2">
-            <span className={`text-[10px] w-16 shrink-0 ${color}`}>{label}</span>
-            <div className="flex-1">
-              <StatBar label="" value={forceScore(key, scores)} showValue={false} />
-            </div>
-            <span className="text-[10px] text-muted w-6 text-right tabular-nums">
-              {forceScore(key, scores)}
-            </span>
+        {/* Wealth uses a custom bar since it's not 0-100 */}
+        <div className="grid grid-cols-[5rem_1fr_auto] items-center gap-2">
+          <span className="text-[10px] text-muted uppercase tracking-widest truncate">Wealth</span>
+          <div className="stat-bar-track">
+            <div
+              className="h-full rounded-full transition-all duration-500 bg-amber-500"
+              style={{ width: `${wealthPct}%`, opacity: 0.5 + wealthPct / 200 }}
+            />
           </div>
-        ))}
+          <span className={`text-[11px] font-medium w-14 text-right tabular-nums ${statTextColor(wealthPct)}`}>
+            {wealthStr(person.wealth)}
+          </span>
+        </div>
       </div>
-    </Link>
+
+      {/* ── Religion tag ── */}
+      {person.religion && person.religion !== 'None' && (
+        <div className="flex flex-wrap gap-1 pt-1">
+          <span className="text-[9px] text-violet-400/80 border border-violet-800/40
+                           rounded px-1.5 py-0.5 leading-none">
+            ✦ {person.religion}
+          </span>
+        </div>
+      )}
+    </div>
   );
 }

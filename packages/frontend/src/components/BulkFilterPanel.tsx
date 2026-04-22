@@ -15,6 +15,18 @@ const NUMERIC_OPS    = ['lt', 'lte', 'gt', 'gte', 'between'] as const;
 const STRING_OPS     = ['eq', 'in'] as const;
 const EMOTIONAL_OPTS = ['traumatic', 'negative', 'neutral', 'positive', 'euphoric'] as const;
 
+const NUMERIC_OP_LABELS: Record<string, string> = {
+  lt:      '< less than',
+  lte:     '≤ at most',
+  gt:      '> greater than',
+  gte:     '≥ at least',
+  between: '↔ between (range)',
+};
+const STRING_OP_LABELS: Record<string, string> = {
+  eq: '= equals',
+  in: '∈ any of (comma list)',
+};
+
 type ScalarNumericField = typeof SCALAR_NUMERIC[number];
 type ScalarStringField  = typeof SCALAR_STRING[number];
 
@@ -208,41 +220,45 @@ export default function BulkFilterPanel() {
 
                   {/* Op */}
                   <div className="flex flex-col gap-0.5">
-                    <label className="text-[9px] text-zinc-600 uppercase">op</label>
+                    <label className="text-[9px] text-zinc-600 uppercase">condition</label>
                     <select
                       className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600"
                       value={f.op}
                       onChange={(e) => updateFilter(f.id, { op: e.target.value })}
                     >
-                      {ops.map((o) => <option key={o} value={o}>{o}</option>)}
+                      {ops.map((o) => (
+                        <option key={o} value={o}>
+                          {type === 'string' ? STRING_OP_LABELS[o] : NUMERIC_OP_LABELS[o]}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
                   {/* Value inputs */}
                   {f.op === 'between' ? (
-                    <>
-                      <div className="flex flex-col gap-0.5">
-                        <label className="text-[9px] text-zinc-600 uppercase">min</label>
+                    <div className="flex flex-col gap-0.5">
+                      <label className="text-[9px] text-zinc-600 uppercase">range</label>
+                      <div className="flex items-center gap-1">
                         <input
                           type="number"
-                          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600 w-20"
+                          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600 w-20 text-center"
+                          placeholder="from"
                           value={f.min}
                           onChange={(e) => updateFilter(f.id, { min: e.target.value })}
                         />
-                      </div>
-                      <div className="flex flex-col gap-0.5">
-                        <label className="text-[9px] text-zinc-600 uppercase">max</label>
+                        <span className="text-zinc-600 text-[11px]">—</span>
                         <input
                           type="number"
-                          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600 w-20"
+                          className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600 w-20 text-center"
+                          placeholder="to"
                           value={f.max}
                           onChange={(e) => updateFilter(f.id, { max: e.target.value })}
                         />
                       </div>
-                    </>
+                    </div>
                   ) : f.op === 'in' ? (
                     <div className="flex flex-col gap-0.5">
-                      <label className="text-[9px] text-zinc-600 uppercase">values (comma-sep)</label>
+                      <label className="text-[9px] text-zinc-600 uppercase">values</label>
                       <input
                         className="bg-zinc-800 border border-zinc-700 rounded px-2 py-1 text-[11px] text-zinc-200 focus:outline-none focus:border-amber-600 w-44"
                         value={f.values}

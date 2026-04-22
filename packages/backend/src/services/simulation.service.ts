@@ -70,6 +70,8 @@ export interface ApplyDeltaOptions {
    * own tone derived from the outcome band.
    */
   tone?:           Tone;
+  /** Optional JSONB trait overrides merged into the traits object */
+  trait_overrides?: Record<string, number>;
 }
 
 /**
@@ -88,6 +90,15 @@ export async function applyDelta(opts: ApplyDeltaOptions): Promise<MutationResul
 
   // Build the Prisma update payload (only defined keys)
   const updateData = buildUpdatePayload(sanitizedDelta);
+
+  // Merge trait overrides into the traits JSONB if provided
+  if (opts.trait_overrides && Object.keys(opts.trait_overrides).length > 0) {
+    const currentTraits = (person.traits as Record<string, number>) ?? {};
+    (updateData as Record<string, unknown>).traits = {
+      ...currentTraits,
+      ...opts.trait_overrides,
+    };
+  }
 
   // Resolve tone: caller-specified wins; otherwise God Mode gets the
   // single-target voice, simulation writes get the neutral log voice.

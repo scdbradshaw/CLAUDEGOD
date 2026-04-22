@@ -199,7 +199,6 @@ export default function People() {
             {data ? `${data.total.toLocaleString()} soul${data.total !== 1 ? 's' : ''} match` : 'Reading the census…'}
           </p>
         </div>
-        <Link to="/" className="text-[11px] text-muted hover:text-gold">← Dashboard</Link>
       </header>
 
       {/* Filter panel */}

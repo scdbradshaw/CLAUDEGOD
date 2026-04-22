@@ -90,6 +90,7 @@ export const DeltaRequestSchema = z.object({
   emotional_impact: z.enum(['traumatic', 'negative', 'neutral', 'positive', 'euphoric']),
   force:            z.boolean().default(false),
   tone:             ToneSchema.optional(),
+  trait_overrides:  z.record(z.string(), z.number().min(0).max(100)).optional(),
 });
 
 // --------------- Criminal Record Request ---------------

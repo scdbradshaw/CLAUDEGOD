@@ -714,6 +714,7 @@ export interface DeltaRequest {
   force?:        boolean;
   /** Optional Chronicler voice override for the memory entry. */
   tone?:         Tone;
+  trait_overrides?: Record<string, number>;
 }
 
 /** Request body for POST /characters/:id/criminal-record */
@@ -738,6 +739,10 @@ export interface CharacterListItem {
   wealth:        number;
   updated_at:    string;
   global_scores: Record<string, number>;
+  traits?:       Record<string, number>;
+  occupation?:   string;
+  race?:         string;
+  religion?:     string;
 }
 
 /**

@@ -11,6 +11,7 @@ import { api } from '../api/client';
 import type { WorldListItem, TickResult } from '@civ-sim/shared';
 import { FORCE_CONFIG } from '../constants/forces';
 import StatBar, { statTextColor } from '../components/StatBar';
+import ThreeMarketCard from '../components/ThreeMarketCard';
 import { GLOBAL_TRAITS } from '@civ-sim/shared';
 
 // ── helpers ───────────────────────────────────────────────────
@@ -205,21 +206,36 @@ export default function Observatory() {
 
         {/* Pulse stats */}
         <div className="lg:col-span-2 grid grid-cols-2 sm:grid-cols-4 gap-3">
-          {worldState && [
-            { label: 'Population',   value: worldState.population.toLocaleString(),       color: 'text-gray-100' },
-            { label: 'Year',         value: `${worldState.current_year}`,                  color: 'text-gold'     },
-            { label: 'Avg Health',   value: `${Math.round(worldState.avg_health)}`,        color: worldState.avg_health >= 67 ? 'text-emerald-400' : worldState.avg_health >= 34 ? 'text-amber-300' : 'text-red-400' },
-            { label: 'Avg Wealth',   value: wealthStr(worldState.avg_wealth),              color: statTextColor(Math.min(worldState.avg_wealth / 500, 100)) },
-            { label: 'Souls Lost',   value: worldState.total_deaths.toLocaleString(),      color: 'text-red-400'  },
-            { label: 'Market Index', value: worldState.market_index.toFixed(2),            color: worldState.market_trend >= 0 ? 'text-emerald-400' : 'text-red-400' },
-            { label: 'Ticks Run',    value: worldState.tick_count.toString(),              color: 'text-zinc-300' },
-            { label: 'Population Tier', value: activeWorld?.population_tier ?? '—',       color: 'text-muted'    },
-          ].map(({ label, value, color }) => (
-            <div key={label} className="panel p-3 text-center">
-              <div className="label mb-1">{label}</div>
-              <div className={`text-xl font-bold font-display tabular-nums ${color}`}>{value}</div>
-            </div>
-          ))}
+          {worldState && <>
+            {[
+              { label: 'Population',   value: worldState.population.toLocaleString(),       color: 'text-gray-100' },
+              { label: 'Year',         value: `${worldState.current_year}`,                  color: 'text-gold'     },
+              { label: 'Avg Health',   value: `${Math.round(worldState.avg_health)}`,        color: worldState.avg_health >= 67 ? 'text-emerald-400' : worldState.avg_health >= 34 ? 'text-amber-300' : 'text-red-400' },
+              { label: 'Avg Wealth',   value: wealthStr(worldState.avg_wealth),              color: statTextColor(Math.min(worldState.avg_wealth / 500, 100)) },
+              { label: 'Souls Lost',   value: worldState.total_deaths.toLocaleString(),      color: 'text-red-400'  },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="panel p-3 text-center">
+                <div className="label mb-1">{label}</div>
+                <div className={`text-xl font-bold font-display tabular-nums ${color}`}>{value}</div>
+              </div>
+            ))}
+
+            <ThreeMarketCard
+              trusUS={{ index: worldState.market_stable_index,   trend: worldState.market_stable_trend }}
+              dreamBIG={{ index: worldState.market_index,        trend: worldState.market_trend }}
+              riskAwin={{ index: worldState.market_volatile_index, trend: worldState.market_volatile_trend }}
+            />
+
+            {[
+              { label: 'Ticks Run',    value: worldState.tick_count.toString(),              color: 'text-zinc-300' },
+              { label: 'Population Tier', value: activeWorld?.population_tier ?? '—',       color: 'text-muted'    },
+            ].map(({ label, value, color }) => (
+              <div key={label} className="panel p-3 text-center">
+                <div className="label mb-1">{label}</div>
+                <div className={`text-xl font-bold font-display tabular-nums ${color}`}>{value}</div>
+              </div>
+            ))}
+          </>}
         </div>
 
         {/* Tick control */}

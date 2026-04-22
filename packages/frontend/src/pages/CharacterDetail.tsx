@@ -458,24 +458,34 @@ function WriteEventTab({ personId }: { personId: string }) {
 
 function CriminalRecordTab({ personId }: { personId: string }) {
   const qc = useQueryClient();
-  const [offense,  setOffense]  = useState('');
-  const [severity, setSeverity] = useState<'minor' | 'major' | 'capital'>('minor');
-  const [status,   setStatus]   = useState<'pending' | 'convicted' | 'acquitted'>('convicted');
-  const [date,     setDate]     = useState('');
-  const [notes,    setNotes]    = useState('');
-  const [errMsg,   setErrMsg]   = useState('');
-  const [okMsg,    setOkMsg]    = useState('');
+  const today = new Date().toISOString().slice(0, 10);
+  const [offense,      setOffense]      = useState('');
+  const [severity,     setSeverity]     = useState<CriminalRecord['severity']>('minor');
+  const [status,       setStatus]       = useState<CriminalRecord['status']>('convicted');
+  const [date,         setDate]         = useState(today);
+  const [notes,        setNotes]        = useState('');
+  const [eventSummary, setEventSummary] = useState('');
+  const [errMsg,       setErrMsg]       = useState('');
+  const [okMsg,        setOkMsg]        = useState('');
 
   const mutation = useMutation({
     mutationFn: () => {
-      if (!offense.trim()) throw new Error('Offense required');
+      if (!offense.trim())      throw new Error('Offense required');
+      if (!eventSummary.trim()) throw new Error('Event summary required');
       return api.characters.addCriminalRecord(personId, {
-        offense: offense.trim(), severity, status,
-        date: date || `Year unknown`, notes: notes.trim() || undefined,
-      } as CriminalRecord);
+        record: {
+          offense: offense.trim(),
+          severity,
+          status,
+          date,
+          notes: notes.trim() || undefined,
+        },
+        event_summary: eventSummary.trim(),
+      });
     },
     onSuccess: () => {
-      setOkMsg('Record added.'); setErrMsg(''); setOffense(''); setNotes('');
+      setOkMsg('Record added.'); setErrMsg('');
+      setOffense(''); setNotes(''); setEventSummary('');
       qc.invalidateQueries({ queryKey: ['character', personId] });
       setTimeout(() => setOkMsg(''), 3000);
     },
@@ -497,8 +507,8 @@ function CriminalRecordTab({ personId }: { personId: string }) {
           <label className="label block">Severity</label>
           <select value={severity} onChange={e => setSeverity(e.target.value as typeof severity)} className="input-base">
             <option value="minor">Minor</option>
-            <option value="major">Major</option>
-            <option value="capital">Capital</option>
+            <option value="moderate">Moderate</option>
+            <option value="severe">Severe</option>
           </select>
         </div>
         <div className="space-y-1">
@@ -512,13 +522,21 @@ function CriminalRecordTab({ personId }: { personId: string }) {
       </div>
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <label className="label block">Date / Year</label>
-          <input type="text" placeholder="e.g. Year 42" value={date} onChange={e => setDate(e.target.value)} className="input-base" />
+          <label className="label block">Date</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)} className="input-base" />
         </div>
         <div className="space-y-1">
           <label className="label block">Notes</label>
           <input type="text" placeholder="Optional context" value={notes} onChange={e => setNotes(e.target.value)} className="input-base" />
         </div>
+      </div>
+      <div className="space-y-1">
+        <label className="label block">Event Summary</label>
+        <input
+          type="text" maxLength={500} placeholder="One-line chronicle entry (required)"
+          value={eventSummary} onChange={e => setEventSummary(e.target.value)}
+          className="input-base"
+        />
       </div>
       <button
         onClick={() => mutation.mutate()} disabled={mutation.isPending}

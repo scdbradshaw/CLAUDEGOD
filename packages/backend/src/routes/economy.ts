@@ -105,6 +105,74 @@ router.patch('/volatility', async (req: Request, res: Response) => {
   res.json({ market_volatility: updated.market_volatility });
 });
 
+// ── PATCH /api/economy/market/:bucket ───────────────────────
+// Per-market controls: trend, volatility, and index (direct set).
+// Body: { trend?: number, volatility?: number, index?: number }
+//   - trend      clamped to [-0.50, +0.50]  (per-tick drift)
+//   - volatility clamped to [0, 0.50]       (per-tick stddev)
+//   - index      clamped to [0.10, 10.0]    (set directly → crash/bull)
+// Bucket must be one of: stable | standard | volatile
+router.patch('/market/:bucket', async (req: Request, res: Response) => {
+  const bucket = req.params.bucket;
+  if (bucket !== 'stable' && bucket !== 'standard' && bucket !== 'volatile') {
+    res.status(400).json({ error: 'bucket must be stable, standard, or volatile' });
+    return;
+  }
+
+  const { trend, volatility, index } = req.body as {
+    trend?:      number;
+    volatility?: number;
+    index?:      number;
+  };
+
+  const data: Record<string, number> = {};
+
+  // Field prefix: standard market uses bare names, stable/volatile are suffixed
+  const prefix = bucket === 'standard' ? 'market' : `market_${bucket}`;
+
+  if (trend !== undefined) {
+    if (typeof trend !== 'number' || !Number.isFinite(trend)) {
+      res.status(400).json({ error: 'trend must be a finite number' });
+      return;
+    }
+    data[`${prefix}_trend`] = Math.max(-0.50, Math.min(0.50, trend));
+  }
+
+  if (volatility !== undefined) {
+    if (typeof volatility !== 'number' || !Number.isFinite(volatility) || volatility < 0) {
+      res.status(400).json({ error: 'volatility must be a non-negative number' });
+      return;
+    }
+    data[`${prefix}_volatility`] = Math.max(0, Math.min(0.50, volatility));
+  }
+
+  if (index !== undefined) {
+    if (typeof index !== 'number' || !Number.isFinite(index) || index <= 0) {
+      res.status(400).json({ error: 'index must be a positive number' });
+      return;
+    }
+    data[`${prefix}_index`] = Math.max(0.10, Math.min(10.0, index));
+  }
+
+  if (Object.keys(data).length === 0) {
+    res.status(400).json({ error: 'at least one of trend, volatility, index is required' });
+    return;
+  }
+
+  const world   = await getActiveWorld();
+  const updated = await prisma.world.update({
+    where: { id: world.id },
+    data,
+  });
+
+  res.json({
+    bucket,
+    market_index:      (updated as any)[`${prefix}_index`],
+    market_trend:      (updated as any)[`${prefix}_trend`],
+    market_volatility: (updated as any)[`${prefix}_volatility`],
+  });
+});
+
 // ── PATCH /api/economy/multipliers ──────────────────────────
 // Sets per-global-trait effect multipliers.
 // Body: { multipliers: { war: 1.5, plague: 2.0, ... } }

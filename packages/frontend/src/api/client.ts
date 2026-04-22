@@ -335,6 +335,20 @@ export const api = {
       request<{ global_traits: Record<string, number> }>(
         '/economy/global-traits', { method: 'PATCH', body: JSON.stringify({ global_traits }) },
       ),
+
+    patchMarket: (
+      bucket:  'stable' | 'standard' | 'volatile',
+      patch:   { trend?: number; volatility?: number; index?: number },
+    ) =>
+      request<{
+        bucket:            'stable' | 'standard' | 'volatile';
+        market_index:      number;
+        market_trend:      number;
+        market_volatility: number;
+      }>(
+        `/economy/market/${bucket}`,
+        { method: 'PATCH', body: JSON.stringify(patch) },
+      ),
   },
 
   rip: {
@@ -472,6 +486,10 @@ export interface WorldSnapshot {
   market_index:             number;
   market_trend:             number;
   market_volatility:        number;
+  market_stable_index:      number;
+  market_stable_trend:      number;
+  market_volatile_index:    number;
+  market_volatile_trend:    number;
   population:               number;
   avg_health:               number;
   avg_wealth:               number;

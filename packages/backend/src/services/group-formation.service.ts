@@ -197,6 +197,9 @@ export async function spawnGroup(
       data: {
         name:          intent.name,
         founder_id:    intent.founderId,
+        // Round 4: founder is the initial leader; succession reassigns this
+        // on death if a worthy heir exists.
+        leader_id:     intent.founderId,
         origin:        intent.origin,
         tolerance:     intent.tolerance,
         virus_profile: intent.profile as Prisma.InputJsonValue,

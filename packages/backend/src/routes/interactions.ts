@@ -40,6 +40,8 @@ import {
   handlePersonDeath,
   runFactionSplitCheck,
   type ReligionDissolveResult,
+  type FactionDissolveResult,
+  type SuccessionResult,
   type FactionSplitResult,
 } from '../services/group-lifecycle.service';
 import { writeMemoriesBatch } from '../services/memory.service';
@@ -647,14 +649,20 @@ router.post('/tick', async (_req: Request, res: Response) => {
     //    memories keyed off the founder relation.
     let deathsThisTick = 0;
     const oldTotalDeaths = world.total_deaths;
-    const religionDissolves: ReligionDissolveResult[] = [];
+    const religionDissolves:   ReligionDissolveResult[] = [];
+    const factionDissolves:    FactionDissolveResult[]  = [];
+    const religionSuccessions: SuccessionResult[]       = [];
+    const factionSuccessions:  SuccessionResult[]       = [];
     const inheritances: InheritanceResult[] = [];
 
     for (const p of living) {
       if (finalHealth[p.id] <= 0) {
         await prisma.$transaction(async (tx) => {
-          const dissolved = await handlePersonDeath(tx, p.id, p.name, world.current_year, world.id);
-          religionDissolves.push(...dissolved);
+          const groupOutcome = await handlePersonDeath(tx, p.id, p.name, world.current_year, world.id);
+          religionDissolves.push(...groupOutcome.religion_dissolves);
+          factionDissolves.push(...groupOutcome.faction_dissolves);
+          religionSuccessions.push(...groupOutcome.religion_successions);
+          factionSuccessions.push(...groupOutcome.faction_successions);
           // Phase 7 Wave 4 — distribute wealth to top kin/spouse/lover
           // before deletion cascades away the edges.
           const inh = await distributeInheritance(tx, p.id, p.name, p.wealth, world.current_year);
@@ -699,8 +707,11 @@ router.post('/tick', async (_req: Request, res: Response) => {
 
       for (const dead of naturallyDying) {
         await prisma.$transaction(async (tx) => {
-          const dissolved = await handlePersonDeath(tx, dead.id, dead.name, newYear, world.id);
-          religionDissolves.push(...dissolved);
+          const groupOutcome = await handlePersonDeath(tx, dead.id, dead.name, newYear, world.id);
+          religionDissolves.push(...groupOutcome.religion_dissolves);
+          factionDissolves.push(...groupOutcome.faction_dissolves);
+          religionSuccessions.push(...groupOutcome.religion_successions);
+          factionSuccessions.push(...groupOutcome.faction_successions);
           // Phase 7 Wave 4 — same inheritance path as interaction deaths.
           const inh = await distributeInheritance(tx, dead.id, dead.name, dead.wealth, newYear);
           if (inh.heirs.length > 0) inheritances.push(inh);
@@ -805,6 +816,9 @@ router.post('/tick', async (_req: Request, res: Response) => {
       );
       agenticActions = agenticResult.actions;
       religionDissolves.push(...agenticResult.religion_dissolves);
+      factionDissolves.push(...agenticResult.faction_dissolves);
+      religionSuccessions.push(...agenticResult.religion_successions);
+      factionSuccessions.push(...agenticResult.faction_successions);
       inheritances.push(...agenticResult.inheritances);
       deathsThisTick += agenticResult.actions.filter(a => a.killed_target).length;
 
@@ -883,6 +897,26 @@ router.post('/tick', async (_req: Request, res: Response) => {
       })),
       religions_dissolved:    religionDissolves.map(r => ({
         religion_id: r.religion_id, name: r.religion_name, members_lost: r.members_lost,
+      })),
+      // Round 4 — leader-death successions + faction dissolutions
+      factions_dissolved:     factionDissolves.map(f => ({
+        faction_id: f.faction_id, name: f.faction_name, members_lost: f.members_lost,
+      })),
+      religion_successions:   religionSuccessions.map(s => ({
+        religion_id:     s.group_id,
+        religion_name:   s.group_name,
+        predecessor_id:  s.predecessor_id,
+        heir_id:         s.heir_id,
+        heir_name:       s.heir_name,
+        composite_score: s.composite_score,
+      })),
+      faction_successions:    factionSuccessions.map(s => ({
+        faction_id:      s.group_id,
+        faction_name:    s.group_name,
+        predecessor_id:  s.predecessor_id,
+        heir_id:         s.heir_id,
+        heir_name:       s.heir_name,
+        composite_score: s.composite_score,
       })),
       faction_splits:         factionSplits.map(s => ({
         new_faction_id: s.new_faction_id,

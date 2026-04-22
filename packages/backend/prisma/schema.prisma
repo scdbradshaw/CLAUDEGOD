@@ -237,6 +237,7 @@ model Person {
   links_out            InnerCircleLink[]    @relation("LinkOwner")
   links_in             InnerCircleLink[]    @relation("LinkTarget")
   founded_religions    Religion[]           @relation("ReligionFounder")
+  led_religions        Religion[]           @relation("ReligionLeader")
   religion_memberships ReligionMembership[]
   founded_factions     Faction[]            @relation("FactionFounder")
   led_factions         Faction[]            @relation("FactionLeader")
@@ -437,6 +438,10 @@ model Religion {
   /// Nullable so dissolved religions persist in the archive after founder death.
   founder    Person? @relation("ReligionFounder", fields: [founder_id], references: [id], onDelete: SetNull)
   founder_id String? @db.Uuid
+  /// Current torchbearer — may differ from founder after succession.
+  /// Round 4: on founder death, we try to promote an heir before dissolving.
+  leader     Person? @relation("ReligionLeader", fields: [leader_id], references: [id], onDelete: SetNull)
+  leader_id  String? @db.Uuid
 
   /// How the group was created. emergent / player / event
   origin        GroupOrigin @default(emergent)
@@ -448,7 +453,7 @@ model Religion {
   founded_year     Int
   is_active        Boolean @default(true)
   dissolved_year   Int?
-  /// 'founder_death' | 'player' | 'split'
+  /// 'founder_death' | 'leader_void' | 'player' | 'split'
   dissolved_reason String?
 
   world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
@@ -460,6 +465,7 @@ model Religion {
   memberships ReligionMembership[]
 
   @@index([founder_id])
+  @@index([leader_id])
   @@index([is_active])
   @@index([world_id])
   @@map("religions")

@@ -31,7 +31,12 @@ import { Prisma, Tone } from '@prisma/client';
 import type { CriminalRecord } from '@civ-sim/shared';
 import { applyRelationshipDeltas, type RelationshipDelta } from './relationships.service';
 import { writeMemoriesBatch, type MemoryWriteInput, type MemoryEventKind } from './memory.service';
-import { handlePersonDeath, type ReligionDissolveResult } from './group-lifecycle.service';
+import {
+  handlePersonDeath,
+  type ReligionDissolveResult,
+  type FactionDissolveResult,
+  type SuccessionResult,
+} from './group-lifecycle.service';
 import { distributeInheritance, type InheritanceResult } from './economy-occupation.service';
 
 // ── Tunables ────────────────────────────────────────────────
@@ -99,10 +104,14 @@ export interface AgenticActionLog {
 }
 
 export interface AgenticRunResult {
-  actions:            AgenticActionLog[];
-  religion_dissolves: ReligionDissolveResult[];
+  actions:              AgenticActionLog[];
+  religion_dissolves:   ReligionDissolveResult[];
+  /** Round 4 — succession / dissolution side-effects from murders. */
+  faction_dissolves:    FactionDissolveResult[];
+  religion_successions: SuccessionResult[];
+  faction_successions:  SuccessionResult[];
   /** Wave 4 — inheritance payouts triggered by this turn's murders. */
-  inheritances:       InheritanceResult[];
+  inheritances:         InheritanceResult[];
 }
 
 // ── Selection ───────────────────────────────────────────────
@@ -246,8 +255,11 @@ export async function executeActions(
   const logs:        AgenticActionLog[] = [];
   const memories:    MemoryWriteInput[] = [];
   const relDeltas:   RelationshipDelta[] = [];
-  const religionDissolves: ReligionDissolveResult[] = [];
-  const inheritances:      InheritanceResult[]      = [];
+  const religionDissolves:   ReligionDissolveResult[] = [];
+  const factionDissolves:    FactionDissolveResult[]  = [];
+  const religionSuccessions: SuccessionResult[]       = [];
+  const factionSuccessions:  SuccessionResult[]       = [];
+  const inheritances:        InheritanceResult[]      = [];
 
   // Status + stat updates batched as separate UPDATEs for clarity — the
   // counts here are small (K ≤ 100) so a bulk-SQL path isn't worth it.
@@ -406,8 +418,11 @@ export async function executeActions(
   // religion-founder cascades fire and liquid wealth transfers exactly like
   // a natural death.
   for (const k of pendingKills) {
-    const dissolved = await handlePersonDeath(tx, k.victim.id, k.victim.name, worldYear, worldId);
-    religionDissolves.push(...dissolved);
+    const groupOutcome = await handlePersonDeath(tx, k.victim.id, k.victim.name, worldYear, worldId);
+    religionDissolves.push(...groupOutcome.religion_dissolves);
+    factionDissolves.push(...groupOutcome.faction_dissolves);
+    religionSuccessions.push(...groupOutcome.religion_successions);
+    factionSuccessions.push(...groupOutcome.faction_successions);
     const inh = await distributeInheritance(tx, k.victim.id, k.victim.name, k.victim.wealth, worldYear);
     if (inh.heirs.length > 0) inheritances.push(inh);
     await tx.deceasedPerson.create({
@@ -424,7 +439,14 @@ export async function executeActions(
     await tx.person.delete({ where: { id: k.victim.id } });
   }
 
-  return { actions: logs, religion_dissolves: religionDissolves, inheritances };
+  return {
+    actions:              logs,
+    religion_dissolves:   religionDissolves,
+    faction_dissolves:    factionDissolves,
+    religion_successions: religionSuccessions,
+    faction_successions:  factionSuccessions,
+    inheritances,
+  };
 }
 
 // ── Orchestrator ────────────────────────────────────────────
@@ -447,11 +469,17 @@ export async function runAgenticTurn(
     conceive?:              ConceiveConfig;
   },
 ): Promise<AgenticRunResult> {
-  if (living.length < MIN_POP_FOR_AGENCY) return { actions: [], religion_dissolves: [], inheritances: [] };
+  if (living.length < MIN_POP_FOR_AGENCY) return {
+    actions: [], religion_dissolves: [], faction_dissolves: [],
+    religion_successions: [], faction_successions: [], inheritances: [],
+  };
 
   const k = Math.min(AGENT_HARD_CAP, Math.max(1, Math.floor(living.length * AGENT_POP_FRACTION)));
   const agents = selectAgents(living, linksOf, k);
-  if (agents.length === 0) return { actions: [], religion_dissolves: [], inheritances: [] };
+  if (agents.length === 0) return {
+    actions: [], religion_dissolves: [], faction_dissolves: [],
+    religion_successions: [], faction_successions: [], inheritances: [],
+  };
 
   const byId = new Map(living.map(p => [p.id, p]));
 
@@ -464,7 +492,10 @@ export async function runAgenticTurn(
     const plan  = pickActionFor(a, edges, byId, { conceive: ctx.conceive });
     if (plan) plans.set(a.id, plan);
   }
-  if (plans.size === 0) return { actions: [], religion_dissolves: [], inheritances: [] };
+  if (plans.size === 0) return {
+    actions: [], religion_dissolves: [], faction_dissolves: [],
+    religion_successions: [], faction_successions: [], inheritances: [],
+  };
 
   return executeActions(tx, agents, plans, byId, worldYear, worldId, {
     startedTick:            ctx.startedTick,

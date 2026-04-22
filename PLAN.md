@@ -76,17 +76,23 @@ Scope:
 
 ---
 
-## Round 4 — Faction succession
+## Round 4 — Faction succession ✅
 
 **Goal:** when a faction leader dies, succession resolves without orphaning the
 faction.
 
 Scope:
-- On leader death, pick heir from inner circle → highest leadership/charisma
-  composite; tiebreak on bond.
-- Fallback to faction dissolution if no viable heir.
-- Narrative headline on succession (epic voice).
-- Same pattern extended to religion founder death.
+- On leader death, pick heir from membership → composite score =
+  leadership + charisma + bond_to_dead; below `MIN_HEIR_COMPOSITE = 100`
+  falls back to dissolution.
+- Applies to both factions (existing `leader_id`) and religions (new
+  `leader_id` column + migration + `onDelete: SetNull`).
+- `handlePersonDeath` now returns a structured `GroupDeathOutcome` with
+  religion/faction dissolves + successions.
+- Succession writes a `leader_succession` group memory plus per-member
+  `group_leader_death` memories (positive impact, epic tone, weight 90).
+- Tick response surfaces `religion_successions`, `faction_successions`,
+  and `factions_dissolved` alongside the existing `religions_dissolved`.
 
 ---
 

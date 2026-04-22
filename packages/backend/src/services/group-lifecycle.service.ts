@@ -1,18 +1,25 @@
 // ============================================================
-// GROUP LIFECYCLE SERVICE — founder death + faction splits
+// GROUP LIFECYCLE SERVICE — leader death, succession, splits
 // ============================================================
 //
-// Step 12: Religion-founder death handler
-//   - When a person dies, every religion they founded dissolves.
-//   - All living members get a "faith lost" traumatic memory.
-//   - Religion row persists (is_active=false) for the archive.
+// Round 4: Leader death handler with succession.
+//   When a person dies who led a group (faction OR religion):
+//     - Try to promote an heir from the living membership.
+//     - Composite score = leadership + charisma + bond_to_dead.
+//     - Below MIN_HEIR_COMPOSITE we fall back to dissolution.
+//   Succession writes a `leader_succession` group memory and per-member
+//   memories (literary tone, high weight) so the moment shows up in
+//   chronicles even after the raw rows compress.
 //
-// Step 13: Faction split logic
-//   - On year boundaries, compare each member's alignment against the
-//     current leader's alignment. Members whose lead exceeds
-//     SPLIT_LEAD_BUFFER for SPLIT_PRESSURE_THRESHOLD consecutive ticks
-//     split off and found a new faction.
-//   - Split persists `split_from_id` so lineage is traceable.
+//   Religions previously dissolved unconditionally on founder death;
+//   with Round 4 they track a separate `leader_id` and follow the same
+//   succession-first / dissolve-fallback pipeline as factions.
+//
+// Step 13: Faction split logic.
+//   On year boundaries, compare each member's alignment against the
+//   current leader's alignment. Members whose lead exceeds
+//   SPLIT_LEAD_BUFFER for SPLIT_PRESSURE_THRESHOLD consecutive ticks
+//   split off and found a new faction. Persists split_from_id.
 // ============================================================
 
 import type { Prisma } from '@prisma/client';
@@ -28,8 +35,16 @@ export const SPLIT_LEAD_BUFFER = 0.10;
 export const SPLIT_PRESSURE_THRESHOLD = 10;
 /** Faith-lost memory parameters. */
 const FAITH_LOST_MAGNITUDE = 0.8;
+/** Succession memory parameters — literary tone, high weight. */
+const SUCCESSION_MAGNITUDE = 0.75;
+/**
+ * Minimum composite score (leadership + charisma + bond-to-dead) for an
+ * heir to be considered worthy. Below this, the group dissolves because
+ * nobody can carry the torch. Range: 0-300; 100 is "mediocre but alive".
+ */
+export const MIN_HEIR_COMPOSITE = 100;
 
-// ── Step 12: Founder death ──────────────────────────────────
+// ── Step 12 / Round 4: Leader death ─────────────────────────
 
 export interface FaithLostMemory {
   person_id:       string;
@@ -45,13 +60,93 @@ export interface ReligionDissolveResult {
   members_lost:  number;
 }
 
+export interface FactionDissolveResult {
+  faction_id:   string;
+  faction_name: string;
+  members_lost: number;
+}
+
+export interface SuccessionResult {
+  group_type:      'religion' | 'faction';
+  group_id:        string;
+  group_name:      string;
+  predecessor_id:  string;
+  heir_id:         string;
+  heir_name:       string;
+  composite_score: number;
+}
+
+export interface GroupDeathOutcome {
+  religion_dissolves:   ReligionDissolveResult[];
+  religion_successions: SuccessionResult[];
+  faction_dissolves:    FactionDissolveResult[];
+  faction_successions:  SuccessionResult[];
+}
+
+interface HeirPick {
+  person_id:  string;
+  name:       string;
+  composite:  number;
+  leadership: number;
+  charisma:   number;
+  bond:       number;
+}
+
 /**
- * Dissolve every active religion founded by `personId` and write faith-lost
- * memories for every member (including the dying founder themselves —
- * their memory row cascades when the person is deleted, which is fine).
+ * Among the living members of a group (excluding the dying leader),
+ * pick the member with the highest composite = leadership + charisma +
+ * bond_to_dead. Returns null when no candidate clears MIN_HEIR_COMPOSITE
+ * — the caller should then dissolve the group.
+ */
+async function pickHeir(
+  tx:        Prisma.TransactionClient,
+  deadId:    string,
+  memberIds: string[],
+): Promise<HeirPick | null> {
+  const candidateIds = memberIds.filter(id => id !== deadId);
+  if (candidateIds.length === 0) return null;
+
+  const persons = await tx.person.findMany({
+    where:  { id: { in: candidateIds } },
+    select: { id: true, name: true, traits: true, health: true },
+  });
+  const alive = persons.filter(p => p.health > 0);
+  if (alive.length === 0) return null;
+
+  const bonds = await tx.innerCircleLink.findMany({
+    where:  { owner_id: { in: alive.map(p => p.id) }, target_id: deadId },
+    select: { owner_id: true, bond_strength: true },
+  });
+  const bondByOwner = new Map<string, number>();
+  for (const b of bonds) {
+    const prev = bondByOwner.get(b.owner_id) ?? 0;
+    if (b.bond_strength > prev) bondByOwner.set(b.owner_id, b.bond_strength);
+  }
+
+  let best: HeirPick | null = null;
+  for (const p of alive) {
+    const traits     = (p.traits ?? {}) as Record<string, number>;
+    const leadership = typeof traits.leadership === 'number' ? traits.leadership : 0;
+    const charisma   = typeof traits.charisma   === 'number' ? traits.charisma   : 0;
+    const bond       = bondByOwner.get(p.id) ?? 0;
+    const composite  = leadership + charisma + bond;
+    if (!best || composite > best.composite) {
+      best = { person_id: p.id, name: p.name, composite, leadership, charisma, bond };
+    }
+  }
+
+  if (!best || best.composite < MIN_HEIR_COMPOSITE) return null;
+  return best;
+}
+
+/**
+ * Handle a person's death for group-lifecycle purposes. For every
+ * active religion or faction the person was currently leading, try
+ * to promote an heir; on failure, dissolve with faith-lost memories
+ * for surviving members.
  *
- * Must be called BEFORE the person is deleted, so we can still read the
- * founder relation and write memories keyed on members.
+ * Must be called BEFORE the person is deleted, so we can still read
+ * the membership relation and write memories keyed off members.
  */
 export async function handlePersonDeath(
   tx:          Prisma.TransactionClient,
@@ -59,72 +154,251 @@ export async function handlePersonDeath(
   personName:  string,
   currentYear: number,
   worldId?:    string,
-): Promise<ReligionDissolveResult[]> {
+): Promise<GroupDeathOutcome> {
+  const outcome: GroupDeathOutcome = {
+    religion_dissolves:   [],
+    religion_successions: [],
+    faction_dissolves:    [],
+    faction_successions:  [],
+  };
+
+  // ── Religions led by the dying person ───────────────────
   const religions = await tx.religion.findMany({
-    where: { founder_id: personId, is_active: true },
+    where: { leader_id: personId, is_active: true },
     select: {
-      id:   true,
-      name: true,
-      world_id: true,
+      id: true, name: true, world_id: true,
       memberships: { select: { person_id: true } },
     },
   });
 
-  if (religions.length === 0) return [];
-
-  const results: ReligionDissolveResult[] = [];
-
   for (const religion of religions) {
-    // Mark the religion dissolved
-    await tx.religion.update({
-      where: { id: religion.id },
-      data:  {
-        is_active:        false,
-        dissolved_year:   currentYear,
-        dissolved_reason: 'founder_death',
-      },
-    });
+    const memberIds = religion.memberships.map(m => m.person_id);
+    const heir      = await pickHeir(tx, personId, memberIds);
+    const effectiveWorldId = worldId ?? religion.world_id;
 
-    // Group-scope memory: write-once record of the dissolution so future
-    // narration (decade summaries, religion chronicles) can still reach it
-    // after per-member memories have compressed away.
-    await writeGroupMemory(tx, {
-      groupType:    'religion',
-      groupId:      religion.id,
-      worldId:      worldId ?? religion.world_id,
-      eventKind:    'dissolved_founder_death',
-      eventSummary: `${religion.name} dissolved when its founder ${personName} died.`,
-      worldYear:    currentYear,
-      tone:         'epic',
-      weight:       95,
-      payload:      { founder_id: personId, members_lost: religion.memberships.length },
-    });
+    if (heir) {
+      await tx.religion.update({
+        where: { id: religion.id },
+        data:  { leader_id: heir.person_id },
+      });
 
-    // Write faith-lost memories for every member who is not the founder
-    // (the founder is about to be deleted; their memories cascade anyway).
-    const otherMembers = religion.memberships.filter(m => m.person_id !== personId);
-    if (otherMembers.length > 0) {
-      await writeMemoriesBatch(tx, otherMembers.map((m) => ({
-        personId:        m.person_id,
-        eventSummary:    `${religion.name} dissolved when ${personName} died. Faith shaken.`,
-        emotionalImpact: 'traumatic' as const,
+      await writeGroupMemory(tx, {
+        groupType:    'religion',
+        groupId:      religion.id,
+        worldId:      effectiveWorldId,
+        eventKind:    'leader_succession',
+        eventSummary: `${heir.name} took up the mantle of ${religion.name} after ${personName} died.`,
+        worldYear:    currentYear,
+        tone:         'epic',
+        weight:       90,
+        payload: {
+          predecessor_id:  personId,
+          heir_id:         heir.person_id,
+          composite_score: heir.composite,
+        },
+      });
+
+      // Heir gets a first-person succession memory
+      await writeMemoriesBatch(tx, [{
+        personId:        heir.person_id,
+        eventSummary:    `Took up the mantle of ${religion.name} after ${personName} died.`,
+        emotionalImpact: 'positive' as const,
         deltaApplied:    {},
-        magnitude:       FAITH_LOST_MAGNITUDE,
+        magnitude:       SUCCESSION_MAGNITUDE,
         counterpartyId:  personId,
         worldYear:       currentYear,
         tone:            'epic' as const,
-        eventKind:       'group_left',
-      })));
-    }
+        eventKind:       'group_leader_death',
+      }]);
 
-    results.push({
-      religion_id:   religion.id,
-      religion_name: religion.name,
-      members_lost:  religion.memberships.length,
-    });
+      // Everyone else gets a witness-voice entry
+      const others = memberIds.filter(id => id !== personId && id !== heir.person_id);
+      if (others.length > 0) {
+        await writeMemoriesBatch(tx, others.map(id => ({
+          personId:        id,
+          eventSummary:    `${heir.name} rose to lead ${religion.name} after ${personName} passed. The faith continues.`,
+          emotionalImpact: 'positive' as const,
+          deltaApplied:    {},
+          magnitude:       SUCCESSION_MAGNITUDE,
+          counterpartyId:  personId,
+          worldYear:       currentYear,
+          tone:            'epic' as const,
+          eventKind:       'group_leader_death',
+        })));
+      }
+
+      outcome.religion_successions.push({
+        group_type:      'religion',
+        group_id:        religion.id,
+        group_name:      religion.name,
+        predecessor_id:  personId,
+        heir_id:         heir.person_id,
+        heir_name:       heir.name,
+        composite_score: heir.composite,
+      });
+    } else {
+      await tx.religion.update({
+        where: { id: religion.id },
+        data:  {
+          is_active:        false,
+          dissolved_year:   currentYear,
+          dissolved_reason: 'leader_void',
+        },
+      });
+
+      await writeGroupMemory(tx, {
+        groupType:    'religion',
+        groupId:      religion.id,
+        worldId:      effectiveWorldId,
+        eventKind:    'dissolved_leader_void',
+        eventSummary: `${religion.name} dissolved when its leader ${personName} died — no worthy heir remained.`,
+        worldYear:    currentYear,
+        tone:         'epic',
+        weight:       95,
+        payload:      { predecessor_id: personId, members_lost: memberIds.length },
+      });
+
+      const others = memberIds.filter(id => id !== personId);
+      if (others.length > 0) {
+        await writeMemoriesBatch(tx, others.map((mid) => ({
+          personId:        mid,
+          eventSummary:    `${religion.name} dissolved when ${personName} died. Faith shaken.`,
+          emotionalImpact: 'traumatic' as const,
+          deltaApplied:    {},
+          magnitude:       FAITH_LOST_MAGNITUDE,
+          counterpartyId:  personId,
+          worldYear:       currentYear,
+          tone:            'epic' as const,
+          eventKind:       'group_left',
+        })));
+      }
+
+      outcome.religion_dissolves.push({
+        religion_id:   religion.id,
+        religion_name: religion.name,
+        members_lost:  memberIds.length,
+      });
+    }
   }
 
-  return results;
+  // ── Factions led by the dying person ────────────────────
+  const factions = await tx.faction.findMany({
+    where: { leader_id: personId, is_active: true },
+    select: {
+      id: true, name: true, world_id: true,
+      memberships: { select: { person_id: true } },
+    },
+  });
+
+  for (const faction of factions) {
+    const memberIds = faction.memberships.map(m => m.person_id);
+    const heir      = await pickHeir(tx, personId, memberIds);
+    const effectiveWorldId = worldId ?? faction.world_id;
+
+    if (heir) {
+      await tx.faction.update({
+        where: { id: faction.id },
+        data:  { leader_id: heir.person_id },
+      });
+
+      await writeGroupMemory(tx, {
+        groupType:    'faction',
+        groupId:      faction.id,
+        worldId:      effectiveWorldId,
+        eventKind:    'leader_succession',
+        eventSummary: `${heir.name} took up the banner of ${faction.name} after ${personName} died.`,
+        worldYear:    currentYear,
+        tone:         'epic',
+        weight:       90,
+        payload: {
+          predecessor_id:  personId,
+          heir_id:         heir.person_id,
+          composite_score: heir.composite,
+        },
+      });
+
+      await writeMemoriesBatch(tx, [{
+        personId:        heir.person_id,
+        eventSummary:    `Took up the banner of ${faction.name} after ${personName} died.`,
+        emotionalImpact: 'positive' as const,
+        deltaApplied:    {},
+        magnitude:       SUCCESSION_MAGNITUDE,
+        counterpartyId:  personId,
+        worldYear:       currentYear,
+        tone:            'epic' as const,
+        eventKind:       'group_leader_death',
+      }]);
+
+      const others = memberIds.filter(id => id !== personId && id !== heir.person_id);
+      if (others.length > 0) {
+        await writeMemoriesBatch(tx, others.map(id => ({
+          personId:        id,
+          eventSummary:    `${heir.name} rose to lead ${faction.name} after ${personName} passed. The banner endures.`,
+          emotionalImpact: 'positive' as const,
+          deltaApplied:    {},
+          magnitude:       SUCCESSION_MAGNITUDE,
+          counterpartyId:  personId,
+          worldYear:       currentYear,
+          tone:            'epic' as const,
+          eventKind:       'group_leader_death',
+        })));
+      }
+
+      outcome.faction_successions.push({
+        group_type:      'faction',
+        group_id:        faction.id,
+        group_name:      faction.name,
+        predecessor_id:  personId,
+        heir_id:         heir.person_id,
+        heir_name:       heir.name,
+        composite_score: heir.composite,
+      });
+    } else {
+      await tx.faction.update({
+        where: { id: faction.id },
+        data:  {
+          is_active:        false,
+          dissolved_year:   currentYear,
+          dissolved_reason: 'leader_void',
+        },
+      });
+
+      await writeGroupMemory(tx, {
+        groupType:    'faction',
+        groupId:      faction.id,
+        worldId:      effectiveWorldId,
+        eventKind:    'dissolved_leader_void',
+        eventSummary: `${faction.name} dissolved when its leader ${personName} died — no heir could raise the banner.`,
+        worldYear:    currentYear,
+        tone:         'epic',
+        weight:       95,
+        payload:      { predecessor_id: personId, members_lost: memberIds.length },
+      });
+
+      const others = memberIds.filter(id => id !== personId);
+      if (others.length > 0) {
+        await writeMemoriesBatch(tx, others.map((mid) => ({
+          personId:        mid,
+          eventSummary:    `${faction.name} dissolved when ${personName} died. The banner fell.`,
+          emotionalImpact: 'traumatic' as const,
+          deltaApplied:    {},
+          magnitude:       FAITH_LOST_MAGNITUDE,
+          counterpartyId:  personId,
+          worldYear:       currentYear,
+          tone:            'epic' as const,
+          eventKind:       'group_left',
+        })));
+      }
+
+      outcome.faction_dissolves.push({
+        faction_id:   faction.id,
+        faction_name: faction.name,
+        members_lost: memberIds.length,
+      });
+    }
+  }
+
+  return outcome;
 }
 
 // ── Step 13: Faction splits ─────────────────────────────────

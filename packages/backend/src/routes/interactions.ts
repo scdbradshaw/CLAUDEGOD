@@ -24,10 +24,10 @@ import {
   emotionalImpactForMagnitude,
   invertImpact,
   computeGrudgeBonus,
-  randFloat,
 } from '../tick/scoring';
 import { resolveInteractionsPhase } from '../tick/resolve-interactions';
 import { withTiming, timingsEnabled, type PhaseTimings } from '../tick/timing';
+import { updateMarketPhase, type MarketEvent } from '../tick/market';
 import { processBirths, type BirthEvent } from '../services/births.service';
 import { getActiveWorld } from '../services/time.service';
 import {
@@ -81,12 +81,6 @@ const router = Router();
 
 // ── Tick lock (Node is single-threaded, this is safe) ───────
 let tickRunning = false;
-
-// Market tunables ─────────────────────────────────────────────
-const MARKET_CEILING       = 10.0;
-const MARKET_FLOOR         = 0.1;
-/** Fraction of the distance from current index to 1.0 pulled back each tick. */
-const MARKET_MEAN_REVERSION = 0.005;
 
 /** Data-driven passive drifts — computed from ruleset.passive_drifts.
  *  Missing global trait keys fall back to 0. */
@@ -602,24 +596,17 @@ router.post('/tick', async (_req: Request, res: Response) => {
     );
     const birthsThisTick = birthEvents.length;
 
-    // 9. Market engine — drift + mean-reversion + ceiling/floor
-    const { newMarketIdx, marketReturn } = await withTiming(timings, 'updateMarket', async () => {
-      const noise             = randFloat(-world.market_volatility, world.market_volatility);
-      const meanReversionPull = (1.0 - world.market_index) * MARKET_MEAN_REVERSION;
-      const marketReturn      = world.market_trend + noise + meanReversionPull;
-      const rawMarketIdx      = world.market_index * (1 + marketReturn);
-      const newMarketIdx      = Math.min(MARKET_CEILING, Math.max(MARKET_FLOOR, rawMarketIdx));
-
-      // Wealth drift proportional to market return
-      if (Math.abs(marketReturn) > 0.0005) {
-        const multiplier = 1 + marketReturn;
-        await prisma.$executeRaw`
-          UPDATE persons SET wealth = wealth * ${multiplier}, updated_at = NOW()
-          WHERE world_id = ${world.id}::uuid AND health > 0 AND wealth > 0
-        `;
-      }
-      return { newMarketIdx, marketReturn };
-    });
+    // 9. Market engine — Round 8: phase module handles drift + trait-
+    //    weighted wealth drift + crash/boom/bubble/depression detection.
+    const { newMarketIdx, marketReturn, marketEvent } = await withTiming(timings, 'updateMarket', () =>
+      updateMarketPhase({
+        prisma,
+        worldId:          world.id,
+        marketIndex:      world.market_index,
+        marketTrend:      world.market_trend,
+        marketVolatility: world.market_volatility,
+      }),
+    );
 
     // 10. Persist world state
     await prisma.world.update({
@@ -641,6 +628,8 @@ router.post('/tick', async (_req: Request, res: Response) => {
       births:                 birthEvents,
       market_return_pct:      Math.round(marketReturn * 1000) / 10,
       new_market_index:       Math.round(newMarketIdx * 100) / 100,
+      // Round 8 — crash/boom/bubble/depression detected this tick (null otherwise)
+      market_event:           marketEvent,
       top_scores:             topScores,
       memories_created:       pendingMemories.length,
       memberships_joined:     pendingJoinsByKey.size,

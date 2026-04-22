@@ -165,18 +165,34 @@ Scope:
 
 ---
 
-## Round 8 — Economy depth + narrative polish
+## Round 8 — Economy depth + narrative polish ✅
 
 **Goal:** make the market feel like a force, not a ticker.
 
 Scope:
-- Market events: crashes, booms, bubbles — triggered by force composites
-  crossing thresholds; each produces a reportage-voice headline.
-- Personal wealth ticks: wealth gain/loss per person driven by market_index
-  movement weighted by trait.craftsmanship / trait.cunning.
-- Narrative polish: voice reference block shared between headlines service and
-  god-mode route (already partially done).
-- Decade summary: include economic arc explicitly.
+- New `packages/backend/src/tick/market.ts` owns the market phase:
+  - `updateMarketPhase()` runs drift/mean-reversion math, applies trait-
+    weighted wealth drift in a single JSONB SQL update, and returns the
+    post-update index, the tick's return, and any classified event.
+  - Wealth sensitivity = `0.5 + craftsmanship/200 + cunning/200` → range
+    [0.5, 1.5] around mean 1.0, so skilled/shrewd characters capture ~3x
+    more upside *and* downside than sheltered ones. Gated by
+    `abs(return) > 0.0005` to skip no-op writes.
+  - `detectMarketEvent()` classifies into crash / boom / bubble /
+    depression with return-based thresholds taking priority over level-
+    based ones, so a recovering crash doesn't also fire a depression
+    headline on the same tick. Tunables: `MARKET_CRASH_RETURN = -0.08`,
+    `MARKET_BOOM_RETURN = 0.08`, `MARKET_BUBBLE_INDEX = 1.6`,
+    `MARKET_DEPRESSION_INDEX = 0.5`.
+- `/api/interactions/tick` now delegates the whole market step to the new
+  phase and surfaces `market_event` on the tick response.
+- Shared `TickResult` gained `market_event?: MarketEvent | null`, plus
+  new `MarketEvent` / `MarketEventKind` types.
+- Dashboard renders the event as a colour-coded reportage-voice callout
+  under the Market row (red=crash, emerald=boom, amber=bubble,
+  slate=depression).
+- Decade economic-arc summary deferred — would require a market_index
+  history table; out of scope for this round.
 
 ---
 

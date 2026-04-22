@@ -382,6 +382,18 @@ export interface TickTopScore {
   outcome:          string;
 }
 
+export type MarketEventKind = 'crash' | 'boom' | 'bubble' | 'depression';
+
+export interface MarketEvent {
+  kind:        MarketEventKind;
+  /** This tick's return, rounded to 0.1 (percentage). */
+  return_pct:  number;
+  /** Post-update market index, rounded to 0.01. */
+  market_idx:  number;
+  /** Reportage-voice one-liner for the headline surface. */
+  description: string;
+}
+
 export interface TickResult {
   tick_number:             number;
   world_year:              number;
@@ -391,6 +403,8 @@ export interface TickResult {
   /** Market return as a percentage (e.g. 2.1 = +2.1%) */
   market_return_pct:       number;
   new_market_index:        number;
+  /** Round 8 — populated when this tick crossed a crash/boom/bubble/depression threshold. */
+  market_event?:           MarketEvent | null;
   /** Best score per interaction type id */
   top_scores:              Record<string, TickTopScore>;
   /** Phase 7 Wave 3 — agentic actions that fired on year-boundary ticks. */

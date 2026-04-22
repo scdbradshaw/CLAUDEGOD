@@ -76,6 +76,19 @@ function TickControls() {
               → {lastResult.new_market_index.toFixed(2)}
             </span>
           </div>
+          {/* Round 8 — surface crash / boom / bubble / depression if fired */}
+          {lastResult.market_event && (
+            <div className={
+              'text-[9px] italic leading-snug pl-2 border-l ' + (
+                lastResult.market_event.kind === 'crash'      ? 'text-red-400 border-red-900'       :
+                lastResult.market_event.kind === 'boom'       ? 'text-emerald-400 border-emerald-900' :
+                lastResult.market_event.kind === 'bubble'     ? 'text-amber-400 border-amber-900'   :
+                /* depression */                                'text-slate-400 border-slate-800'
+              )
+            }>
+              {lastResult.market_event.description}
+            </div>
+          )}
           {lastResult.agentic_actions && lastResult.agentic_actions.length > 0 && (
             <div className="pt-2 mt-2 border-t border-border/50 space-y-0.5">
               <div className="flex justify-between">

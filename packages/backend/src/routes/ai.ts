@@ -125,7 +125,16 @@ const tools: Anthropic.Tool[] = [
 
 // --------------- Tool execution ---------------
 
-async function executeTool(name: string, input: Record<string, unknown>): Promise<string> {
+type ToolOutcome = {
+  message:       string;
+  touched_ids:   string[];
+  roster_changed: boolean;
+};
+
+async function executeTool(
+  name:  string,
+  input: Record<string, unknown>,
+): Promise<ToolOutcome> {
   try {
     switch (name) {
       case 'list_characters': {
@@ -133,7 +142,7 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           select: { id: true, name: true, age: true, health: true, wealth: true },
           orderBy: { name: 'asc' },
         });
-        return JSON.stringify(chars, null, 2);
+        return { message: JSON.stringify(chars, null, 2), touched_ids: [], roster_changed: false };
       }
 
       case 'get_character': {
@@ -141,7 +150,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           where: { id: input.id as string },
           include: { memory_bank: { orderBy: { timestamp: 'desc' }, take: 10 } },
         });
-        return person ? JSON.stringify(person, null, 2) : 'Character not found';
+        return {
+          message:        person ? JSON.stringify(person, null, 2) : 'Character not found',
+          touched_ids:    [],
+          roster_changed: false,
+        };
       }
 
       case 'apply_delta': {
@@ -153,7 +166,11 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           force:            (input.force as boolean) ?? false,
           tone:             input.tone as Tone | undefined,
         });
-        return `Updated ${result.person.name} — ${JSON.stringify(input.delta)}`;
+        return {
+          message:        `Updated ${result.person.name} — ${JSON.stringify(input.delta)}`,
+          touched_ids:    [input.id as string],
+          roster_changed: false,
+        };
       }
 
       case 'add_criminal_record': {
@@ -170,26 +187,35 @@ async function executeTool(name: string, input: Record<string, unknown>): Promis
           input.event_summary as string,
           input.tone as Tone | undefined,
         );
-        return `Criminal record added for ${result.person.name}: ${input.offense}`;
+        return {
+          message:        `Criminal record added for ${result.person.name}: ${input.offense}`,
+          touched_ids:    [input.id as string],
+          roster_changed: false,
+        };
       }
 
       case 'create_character': {
         const person = await prisma.person.create({
           data: { ...(input as any), criminal_record: [] as Prisma.InputJsonValue },
         });
-        return `Created character: ${person.name} (id: ${person.id})`;
+        return {
+          message:        `Created character: ${person.name} (id: ${person.id})`,
+          touched_ids:    [person.id],
+          roster_changed: true,
+        };
       }
 
       case 'delete_character': {
-        await prisma.person.delete({ where: { id: input.id as string } });
-        return 'Character deleted';
+        const id = input.id as string;
+        await prisma.person.delete({ where: { id } });
+        return { message: 'Character deleted', touched_ids: [id], roster_changed: true };
       }
 
       default:
-        return `Unknown tool: ${name}`;
+        return { message: `Unknown tool: ${name}`, touched_ids: [], roster_changed: false };
     }
   } catch (err) {
-    return `Error: ${(err as Error).message}`;
+    return { message: `Error: ${(err as Error).message}`, touched_ids: [], roster_changed: false };
   }
 }
 
@@ -225,6 +251,12 @@ router.post('/', async (req: Request, res: Response) => {
     const messages: Anthropic.MessageParam[] = [
       { role: 'user', content: userMessage },
     ];
+
+    // Round 6 — reconciliation. Accumulate every character touched across
+    // the whole agentic loop so the client can invalidate the right queries
+    // in the `done` event without needing to diff roster manually.
+    const touchedIds   = new Set<string>();
+    let   rosterChanged = false;
 
     // Voice reference block — lets Claude choose per-event tones deliberately
     // when it invokes apply_delta / add_criminal_record. God Mode writes
@@ -272,17 +304,30 @@ Match the voice to the event, not to the user's request — a quiet death is lit
 
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
-      for (const tool of toolCalls) {
+      for (let i = 0; i < toolCalls.length; i++) {
+        const tool = toolCalls[i];
+        // Round 6 — emit progress before each tool so the client can show
+        // a "tool 2 of 3" indicator on multi-tool turns.
+        send({ type: 'progress', current: i + 1, total: toolCalls.length, name: tool.name });
         send({ type: 'tool', name: tool.name });
-        const result = await executeTool(tool.name, tool.input as Record<string, unknown>);
-        send({ type: 'tool_done', name: tool.name, result });
-        toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: result });
+        const outcome = await executeTool(tool.name, tool.input as Record<string, unknown>);
+        for (const id of outcome.touched_ids) touchedIds.add(id);
+        if (outcome.roster_changed) rosterChanged = true;
+        send({ type: 'tool_done', name: tool.name, result: outcome.message });
+        toolResults.push({ type: 'tool_result', tool_use_id: tool.id, content: outcome.message });
       }
 
       messages.push({ role: 'user', content: toolResults });
     }
 
-    send({ type: 'done' });
+    // Round 6 — reconciliation payload. Client invalidates per-character
+    // queries for every touched id + the roster-level queries when a
+    // character was created or deleted.
+    send({
+      type:            'done',
+      touched_ids:     [...touchedIds],
+      roster_changed:  rosterChanged,
+    });
   } catch (err) {
     send({ type: 'error', message: (err as Error).message });
   } finally {

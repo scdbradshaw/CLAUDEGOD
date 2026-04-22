@@ -126,17 +126,23 @@ Scope:
 
 ---
 
-## Round 6 — God Mode SSE improvements
+## Round 6 — God Mode SSE improvements ✅
 
 **Goal:** tighten the streaming UX of the `/api/ai` route.
 
 Scope:
-- Structured event types (`text`, `tool`, `tool_done`, `done`, `error`) are
-  already in place — add `thinking` for Claude planning blocks if available,
-  `progress` for multi-tool sequences.
-- Client-side reconciliation: after `done`, re-fetch affected character(s) so
-  the UI shows the new state without a page refresh.
-- Error surface: user sees a toast with the error message; input isn't lost.
+- `/api/ai` now emits a `progress` event (`{current, total, name}`) before
+  every tool call, so multi-tool turns can render a "step N / M" indicator.
+- `executeTool()` returns a structured `{message, touched_ids, roster_changed}`
+  outcome. The route accumulates every touched character id across the full
+  agentic loop and attaches them to the terminal `done` event.
+- AIConsole consumes `done.touched_ids` + `done.roster_changed` to invalidate
+  per-character + roster-level React Query caches so CharacterDetail / People /
+  Dashboard reconcile without a page refresh.
+- AIConsole preserves user input on fetch errors (only clears after the SSE
+  stream actually starts); retries don't lose the prompt.
+- `progress` is only rendered when `total > 1` to avoid noise on single-tool
+  turns.
 
 ---
 

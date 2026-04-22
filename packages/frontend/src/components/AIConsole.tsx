@@ -3,12 +3,14 @@
 // ============================================================
 
 import { useState, useRef, useEffect } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 type OutputItem =
   | { kind: 'user';     text: string }
   | { kind: 'text';     text: string }
   | { kind: 'tool';     name: string }
   | { kind: 'tool_done'; name: string; result: string }
+  | { kind: 'progress'; current: number; total: number; name: string }
   | { kind: 'error';    message: string };
 
 const TOOL_LABELS: Record<string, string> = {
@@ -21,6 +23,7 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 export default function AIConsole() {
+  const qc = useQueryClient();
   const [input, setInput]       = useState('');
   const [output, setOutput]     = useState<OutputItem[]>([]);
   const [streaming, setStreaming] = useState(false);
@@ -35,10 +38,13 @@ export default function AIConsole() {
     if (!input.trim() || streaming) return;
 
     const userMessage = input.trim();
-    setInput('');
     setStreaming(true);
 
     setOutput(prev => [...prev, { kind: 'user', text: userMessage }]);
+
+    // Round 6 — preserve input on error so the user doesn't lose their prompt.
+    // Only clear once the request cleanly reaches the server stream.
+    let submittedOk = false;
 
     try {
       const response = await fetch('/api/ai', {
@@ -50,6 +56,8 @@ export default function AIConsole() {
       if (!response.ok || !response.body) {
         throw new Error(`HTTP ${response.status}`);
       }
+      submittedOk = true;
+      setInput('');
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
@@ -93,6 +101,30 @@ export default function AIConsole() {
               setOutput(prev => [...prev, { kind: 'tool_done', name: data.name, result: data.result }]);
               break;
 
+            case 'progress':
+              setOutput(prev => [...prev, {
+                kind:    'progress',
+                current: data.current,
+                total:   data.total,
+                name:    data.name,
+              }]);
+              break;
+
+            case 'done':
+              // Round 6 — reconcile UI. Invalidate per-character caches for
+              // every touched id; if the roster changed, invalidate the
+              // list-level queries too so People / Dashboard refresh.
+              if (Array.isArray(data.touched_ids)) {
+                for (const id of data.touched_ids as string[]) {
+                  qc.invalidateQueries({ queryKey: ['character', id] });
+                }
+              }
+              if (data.roster_changed) {
+                qc.invalidateQueries({ queryKey: ['characters'] });
+                qc.invalidateQueries({ queryKey: ['people:search'] });
+              }
+              break;
+
             case 'error':
               setOutput(prev => [...prev, { kind: 'error', message: data.message }]);
               break;
@@ -101,6 +133,8 @@ export default function AIConsole() {
       }
     } catch (err) {
       setOutput(prev => [...prev, { kind: 'error', message: String(err) }]);
+      // Input was never cleared; leave it so the user can retry.
+      if (submittedOk) setInput(userMessage); // restore if we cleared after stream began
     } finally {
       setStreaming(false);
     }
@@ -153,6 +187,14 @@ export default function AIConsole() {
                   ⚙ {TOOL_LABELS[item.name] ?? item.name}…
                 </div>
               );
+            case 'progress':
+              // Only surface progress on multi-tool turns; a single tool's
+              // "1 of 1" is visual noise.
+              return item.total > 1 ? (
+                <div key={i} className="text-amber-600/60 text-[10px]">
+                  step {item.current} / {item.total}
+                </div>
+              ) : null;
             case 'tool_done':
               return (
                 <div key={i} className="text-emerald-700/70 text-[10px]">

@@ -33,11 +33,11 @@ function applySimulationRules(
   const result = { ...delta };
 
   // Clamp 0-100 stats
-  const clampedStats = ['health'] as const;
+  const clampedStats = ['current_health', 'max_health', 'attack', 'defense', 'speed'] as const;
 
   for (const stat of clampedStats) {
-    if (result[stat] !== undefined) {
-      result[stat] = Math.max(0, Math.min(100, result[stat] as number));
+    if ((result as Record<string, unknown>)[stat] !== undefined) {
+      (result as Record<string, unknown>)[stat] = Math.max(0, Math.min(100, (result as Record<string, unknown>)[stat] as number));
     }
   }
 
@@ -46,9 +46,9 @@ function applySimulationRules(
     result.age = current.age as number;
   }
 
-  // Wealth floor at 0 for normal simulation
-  if (result.wealth !== undefined) {
-    result.wealth = Math.max(0, result.wealth as number);
+  // Money floor at 0 for normal simulation
+  if ((result as Record<string, unknown>).money !== undefined) {
+    (result as Record<string, unknown>).money = Math.max(0, (result as Record<string, unknown>).money as number);
   }
 
   return result;
@@ -249,7 +249,7 @@ export async function applyBulkFilter(
   const ids = matched.map((r) => r.id);
 
   // ── 3. Separate scalar deltas from JSONB trait deltas ────────────────────
-  const CLAMP_STATS = new Set(['health']);
+  const CLAMP_STATS = new Set(['current_health', 'max_health', 'attack', 'defense', 'speed']);
   const scalarSets: Record<string, number>   = {};
   const scalarNudges: Record<string, number> = {};
   const traitSets: Record<string, number>    = {};

@@ -64,7 +64,7 @@ export interface AgentPersonSnapshot {
   name:   string;
   age:    number;
   traits: Record<string, number>;
-  wealth: number;
+  money:  number;
   relationship_status: string;
   criminal_record: CriminalRecord[];
 }
@@ -137,8 +137,8 @@ export function selectAgents(
         (m, e) => Math.max(m, Math.abs(e.bond_strength - 50)),
         0,
       );
-      const honestyDev = Math.abs((p.traits['honesty'] ?? 50) - 50);
-      const score = (p.traits['leadership'] ?? 50) + honestyDev * 2 + maxBondDev * 2;
+      const loyaltyDev = Math.abs((p.traits['loyalty'] ?? 50) - 50);
+      const score = (p.traits['ambition'] ?? 50) + loyaltyDev * 2 + maxBondDev * 2;
       return { person: p, score };
     });
 
@@ -174,8 +174,8 @@ export function pickActionFor(
   const live = edges.filter(e => byId.has(e.target_id));
   if (live.length === 0) return null;
 
-  // Murder — low-honesty agent, intense enmity target.
-  if ((agent.traits['honesty'] ?? 50) <= MURDER_MORALITY_MAX) {
+  // Murder — low-loyalty agent (disloyal/treacherous), intense enmity target.
+  if ((agent.traits['loyalty'] ?? 50) <= MURDER_MORALITY_MAX) {
     const victim = live
       .filter(e => e.relation_type === 'enemy' && e.bond_strength <= MURDER_BOND_MAX)
       .sort((a, b) => a.bond_strength - b.bond_strength)[0];
@@ -199,7 +199,7 @@ export function pickActionFor(
   const traitor = live
     .filter(e => e.relation_type === 'close_friend' && e.bond_strength >= BETRAY_BOND_MIN)
     .sort((a, b) => b.bond_strength - a.bond_strength)[0];
-  if (traitor && ((agent.traits['honesty'] ?? 50) <= 40 || Math.random() < 0.3)) {
+  if (traitor && ((agent.traits['loyalty'] ?? 50) <= 40 || Math.random() < 0.3)) {
     return { kind: 'betray', target: traitor };
   }
 
@@ -423,7 +423,7 @@ export async function executeActions(
     factionDissolves.push(...groupOutcome.faction_dissolves);
     religionSuccessions.push(...groupOutcome.religion_successions);
     factionSuccessions.push(...groupOutcome.faction_successions);
-    const inh = await distributeInheritance(tx, k.victim.id, k.victim.name, k.victim.wealth, worldYear);
+    const inh = await distributeInheritance(tx, k.victim.id, k.victim.name, k.victim.money, worldYear);
     if (inh.heirs.length > 0) inheritances.push(inh);
     await tx.deceasedPerson.create({
       data: {
@@ -432,7 +432,7 @@ export async function executeActions(
         world_year:   worldYear,
         cause:        'interaction',
         final_health: 0,
-        final_wealth: k.victim.wealth,
+        final_money:  k.victim.money,
         world_id:     worldId,
       },
     });

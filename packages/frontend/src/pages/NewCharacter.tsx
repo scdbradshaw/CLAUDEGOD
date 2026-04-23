@@ -21,8 +21,8 @@ interface FormState {
   religion:            string;
   relationship_status: string;
   physical_appearance: string;
-  wealth:              number;
-  health:              number;
+  money:               number;
+  current_health:      number;
 }
 
 type FormAction =
@@ -121,15 +121,15 @@ function buildRandom(preset?: string): FormState {
     religion:            pick(RELIGIONS),
     relationship_status: pick(RELATIONSHIPS),
     physical_appearance: getAppearance(race, gender, age),
-    wealth:              parseFloat((Math.random() * (arch.wealthMax - arch.wealthMin) + arch.wealthMin).toFixed(2)),
-    health:              clamp(rnd(30, 70) + arch.healthBias),
+    money:               Math.round(Math.random() * (arch.wealthMax - arch.wealthMin) + arch.wealthMin),
+    current_health:      clamp(rnd(30, 70) + arch.healthBias),
   };
 }
 
 const BLANK: FormState = {
   name: '', gender: '', race: '', occupation: 'commoner', sexuality: Sexuality.HETEROSEXUAL,
   age: 25, death_age: 80, religion: '', relationship_status: '',
-  physical_appearance: '', wealth: 0, health: 100,
+  physical_appearance: '', money: 0, current_health: 100,
 };
 
 function reducer(state: FormState, action: FormAction): FormState {
@@ -197,6 +197,13 @@ export default function NewCharacter() {
       traits:          {},
       global_scores:   {},
       trauma_score:    0,
+      happiness:       50,
+      max_health:      100,
+      attack:          50,
+      defense:         50,
+      speed:           50,
+      money_invested:  0,
+      moral_score:     0,
     }),
     onSuccess: (person) => {
       qc.invalidateQueries({ queryKey: ['characters'] });
@@ -289,8 +296,8 @@ export default function NewCharacter() {
             <Field label="Death Age">
               <input type="number" className={inputClass} min={1} max={999} value={form.death_age} onChange={setNum('death_age')} />
             </Field>
-            <Field label="Wealth ($)">
-              <input type="number" className={inputClass} min={0} value={form.wealth} onChange={setNum('wealth')} />
+            <Field label="Money ($)">
+              <input type="number" className={inputClass} min={0} value={form.money} onChange={setNum('money')} />
             </Field>
           </div>
         </div>
@@ -298,7 +305,7 @@ export default function NewCharacter() {
         {/* Core Stats */}
         <div className="panel p-5 space-y-4">
           <h2 className="font-display text-[10px] text-gold/80 uppercase tracking-widest">Vital</h2>
-          <StatSlider label="Health" value={form.health} onChange={v => dispatch({ type: 'SET', field: 'health', value: v })} />
+          <StatSlider label="Health" value={form.current_health} onChange={v => dispatch({ type: 'SET', field: 'current_health', value: v })} />
           <p className="text-[10px] text-zinc-600">
             Identity traits (25 attributes) are generated from archetype when this character is summoned.
           </p>

@@ -37,17 +37,17 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: 'apply_delta',
-    description: 'Apply stat changes to a character with a narrative description. Use this to change health, wealth, age, occupation, relationship_status, religion, physical_appearance, sexuality, or death_age. To change identity traits (charisma, leadership, honesty, resilience, etc.) prefix the key with "trait." e.g. "trait.charisma".',
+    description: 'Apply stat changes to a character with a narrative description. Use this to change current_health, money, age, occupation, relationship_status, religion, physical_appearance, sexuality, or death_age. To change identity traits (charisma, ambition, loyalty, resilience, etc.) prefix the key with "trait." e.g. "trait.charisma".',
     input_schema: {
       type: 'object',
       properties: {
         id: { type: 'string', description: 'Character UUID' },
         delta: {
           type: 'object',
-          description: 'Fields to update and their new values. Scalar columns: health, wealth, age, death_age. String columns: occupation, relationship_status, religion, physical_appearance. Identity traits: use "trait.<key>" e.g. "trait.charisma".',
+          description: 'Fields to update and their new values. Scalar columns: current_health, money, age, death_age. String columns: occupation, relationship_status, religion, physical_appearance. Identity traits: use "trait.<key>" e.g. "trait.charisma".',
           properties: {
-            health:              { type: 'number' },
-            wealth:              { type: 'number' },
+            current_health:      { type: 'number' },
+            money:               { type: 'number' },
             age:                 { type: 'number' },
             occupation:          { type: 'string' },
             death_age:           { type: 'number' },
@@ -105,9 +105,9 @@ const tools: Anthropic.Tool[] = [
         death_age:           { type: 'number' },
         relationship_status: { type: 'string' },
         religion:            { type: 'string' },
-        health:              { type: 'number' },
+        current_health:      { type: 'number' },
         physical_appearance: { type: 'string' },
-        wealth:              { type: 'number' },
+        money:               { type: 'number' },
       },
       required: ['name', 'sexuality', 'gender', 'race', 'age', 'death_age', 'relationship_status', 'religion', 'physical_appearance'],
     },
@@ -139,7 +139,7 @@ async function executeTool(
     switch (name) {
       case 'list_characters': {
         const chars = await prisma.person.findMany({
-          select: { id: true, name: true, age: true, health: true, wealth: true },
+          select: { id: true, name: true, age: true, current_health: true, money: true },
           orderBy: { name: 'asc' },
         });
         return { message: JSON.stringify(chars, null, 2), touched_ids: [], roster_changed: false };

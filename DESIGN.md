@@ -1,380 +1,353 @@
-# AI GOD — Design Doc
+# AI GOD — Game Design
 
-**Status:** Design locked in via interview on 2026-04-21. Pre-implementation. This doc is the source of truth for what the game should become; where existing code diverges, code will be refactored to match this.
+Read this file at the start of every session. It covers vision, design principles, and the roadmap for what gets built next. `AUDIT.md` is the companion — it describes exactly what is currently implemented.
 
 ---
 
-## 1. North Star
+## North Star
 
 **Full control + unforeseen repercussions.**
 
-The player is omnipotent — every lever is exposed, every person is editable, every rule is swappable. But the simulation must be chaotic enough to surprise even its creator. Every deliberate action should produce at least one second-order effect the player didn't explicitly request.
+The player is omnipotent — every lever is exposed, every person is editable, every world rule is swappable. But the simulation must be chaotic enough to surprise its creator. Every deliberate action should produce at least one second-order effect the player didn't explicitly request.
 
-This is a private toy. There is no audience, no monetization, no multiplayer. It is a personal AI story engine disguised as a civilization sim.
-
----
-
-## 2. Purpose & Vision
-
-- **What it is:** A personal sandbox for generating AI-authored life stories. Watch characters and groups rise and fall, manipulate the world's underlying forces, dive in and co-author any arc that grabs you.
-- **What it feels like:** Dramatic rises and falls — child prodigy becomes moon contractor becomes meth addict in a ditch. Burning it all down with nukes. Thriving societies. Rival families. Religious wars. All emergent from system interaction, all surfaced as narrative.
-- **What's unique:** Every other civ/sim game simulates systems. This simulates *lives*, narrated by Claude, fully under the player's authorial control.
-- **Multi-world:** A world designer lets the player pick which global rules are active per world. Different worlds = different engines = different kinds of stories.
+This is a private toy. No audience. No monetization. A personal AI story engine disguised as a civilization sim.
 
 ---
 
-## 3. Player Role
+## What It Feels Like
 
-The player is a **director**, not a passive observer or pure interventionist.
-
-- **Ticks are player-triggered.** Time does not advance on its own. Run 1 tick, mess around, run 10 more, dive into a character, run 100 more.
-- **Typical flow:** Sim surfaces interesting people via headlines → player zooms in → player edits stats, adds custom history, forces a specific interaction → sim runs forward from the new state.
-- **God Mode powers:**
-  - Edit any stat on any person
-  - Apply deltas with a written event summary (becomes a memory entry)
-  - Add criminal records
-  - Bulk filter-based actions (e.g. "everyone under 10 gets +100k wealth")
-  - Force a specific interaction between two specific people
-  - Create groups manually with hand-authored virus profiles
-  - Dissolve groups
-  - Drop nuke-style catastrophic events
+- **Dramatic arcs.** Child prodigy becomes moon contractor becomes meth addict in a ditch. Rival families locked in a 200-year blood feud. A religion swallows half the world and then collapses when its prophet is assassinated.
+- **Emergent, not scripted.** Every story comes from system interaction — traits + forces + relationships + memory — surfaced as narrative.
+- **The director, not the writer.** The player sets the stage, edits the rules, meddles in specific lives, and lets it run. Claude writes the prose.
 
 ---
 
-## 4. The Person Model
+## Core Design Principles
 
-Each person has three layers:
+These govern every decision about what to build and how to build it.
 
-### 4.1 Demographics (fixed facts)
+1. **The simulation owns the facts. Claude owns the prose.** Game logic computes who lives, who dies, who joins what group, who inherits wealth. Claude's only job is to narrate what the simulation already decided.
 
-| Field | Notes |
-|---|---|
-| Name | String |
-| Current age | Int |
-| Death age | Rolled at birth from race-based lifespan. Natural cap — person can die earlier. |
-| Race | Label; determines lifespan |
-| Gender | Label |
-| Sexuality | Label |
-| Occupation | Label; influences some interactions |
-| Religion | Label; empty/None allowed |
-| Net worth | Float, unbounded |
-| Family/household status | Label |
+2. **Every action must have a ripple.** If a player action has zero second-order effects, it is not finished. Edit a trait → they found a religion → it infects 30 people you weren't watching → a schism forms → a faction starts a war. That chain is the game.
 
-In this world, science has advanced enough that **anyone can conceive a child with anyone at any age.** No biological gating on reproduction.
+3. **Data-driven engine.** No stat names hardcoded in application logic. The ruleset JSON is the engine. Missing stats = silent no-op. This lets the player swap entire systems per world without breaking anything.
 
-### 4.2 Identity Attributes (25 total, all 0-100, constant across rule swaps)
+4. **Ticks are player-triggered.** Time does not advance on its own. Run 1 tick, mess around, run 10 more, dive into a character, run 100 more. The player controls pacing.
 
-| Category | Attributes |
-|---|---|
-| Physical | beauty, health, strength, endurance, agility |
-| Mental | intelligence, creativity, memory, curiosity, cunning |
-| Social | charisma, empathy, humor, leadership, persuasion |
-| Character | ambition, discipline, honesty, courage, resilience |
-| Skills | combat, craftsmanship, artistry, street_smarts, survival |
+5. **The content ceiling is unflinching.** Overdose, assassination, abuse, sexual violence — rendered directly when the narrative calls for it. No gratuitous horror but no squeamish euphemism.
 
-These change slowly over life based on accumulated interaction outcomes and trauma/triumph memories.
-
-### 4.3 World-Rule Traits (8 per active rule)
-
-Each active world rule attaches 8 personal resonance traits. These represent how much of that force lives in the individual. They are dynamic — interactions and world events push them up and down.
-
-| World scale | Active rules | Total person traits |
-|---|---|---|
-| Minimal | 4 | 62 (10 demo + 25 ID + 32 rule) |
-| Standard | 6 | 78 |
-| Complex | 8 | 94 |
-
-Practical upper bound: ~10 active rules before a person sheet becomes unreadable.
-
-### 4.4 Other person-attached data
-
-- **Memory bank** — log of significant events with emotional valence and optional per-person tags
-- **Criminal record** — JSONB array of offenses
-- **Inner circle** — list of linked people with relationship type (parent, child, sibling, spouse, lover, close friend, rival, enemy) and bond strength (0-100)
-- **Group memberships** — religion, political faction, etc.
+6. **Scale is a dial, not a bet.** Each world picks its tier. Intimate (100–500 people): every person trackable. Town (500–5k): paginated, personal but noisy. Civilization (5k–50k): macro view, dive via filters. Build for intimate first, scale later.
 
 ---
 
-## 5. World Forces & Engines
+## What Is Built (Summary)
 
-### 5.1 Structure
+See `AUDIT.md` for full detail. High level:
 
-Each world rule (force) has:
-- A composite score (0-100), computed by normalizing and averaging its children
-- 4 children with typed ranges (always-negative, bipolar, always-positive)
-- An effect multiplier (player dial, default 1×)
-
-### 5.2 Force engine layers
-
-**Layer 1 — Composite score = reach.** Determines how many people the engine touches per tick. Low (0-30): only a few. High (70-100): everyone.
-
-**Layer 2 — Children = what fires.** Each child has threshold-gated effects defined in the ruleset JSON. Two worlds with the same composite score can feel completely different depending on which children are elevated.
-
-**Layer 3 — Effect multiplier = player amplification.** Cranks the whole engine regardless of children.
-
-### 5.3 Data-driven principle
-
-**The ruleset IS the engine.** No stat names are hardcoded in application logic. Effects reference stats by string. If a stat doesn't exist on a person, the effect is a silent no-op. This lets the player swap entire trait systems per world without breaking the engine.
-
-### 5.4 Rule library
-
-Rules are first-class reusable entities. The player maintains a library. Each world picks 4-8 active rules from the library. Rules can be edited, cloned, or authored from scratch.
+- **Core tick engine** — interaction resolution, scoring, outcome bands, trait deltas, memory writes, group joins, pregnancy queueing. All in one `$transaction` per year.
+- **Person model** — 25 identity attributes, 24 global force scores, demographics, trauma score, criminal record, inner circle links, market bucket.
+- **Groups** — religions and factions. Viral membership via trait-matching virus profiles. Emergent founding (capability gate + dramatic event). Founder-death dissolution. Faction splits under sustained dissident pressure.
+- **Memory system** — per-person narrative log with weight-based decade compression. Trauma scar tissue. Grudge reweighting for future antagonizer pairings.
+- **Births** — conception interaction → pregnancy → child creation with 50/50 trait inheritance, family links.
+- **Agentic actions** — year-boundary autonomous decisions: befriend, betray, marry, murder, attempt_conception.
+- **Three-market economy** — stable/standard/volatile buckets. Crash/boom/bubble/depression events. Trait-modulated wealth sensitivity.
+- **Narrative** — tone-routed Claude headlines (tabloid/literary/epic/reportage). Annual + decade summaries. Postgres-as-queue for async generation.
+- **God Mode** — single-target delta, bulk filter+delta, force-specific interaction, manual event authoring, AI console.
+- **World designer** — multi-world support, ruleset library, world creation with population tier.
 
 ---
 
-## 6. Interactions
+## What Is Not Built (Prioritized Roadmap)
 
-### 6.1 Loop
-
-Every living person runs exactly **1 interaction per tick as the subject**, paired with an antagonizer.
-
-### 6.2 Antagonizer selection
-
-**60/40 hybrid weighting:**
-- 60% weighted toward the subject's connections (inner circle, same group, rivals)
-- 40% random wild card
-
-### 6.3 Scoring
-
-Only the **subject's traits** + **world force amplifiers** determine the outcome score. The antagonizer does not fight back mechanically — they just react to whatever happens.
-
-Score maps to an outcome band (e.g. Triumph, Setback, Death) defined in the ruleset.
-
-### 6.4 Asymmetric outcomes
-
-Each outcome band produces **two effect packets** — one for the subject, one for the antagonizer — and world rules can modify each side independently.
-
-Example: high Tyranny → subjects gain more from their interactions, antagonizers suffer more. High Faith → both parties get morality boosts regardless of outcome.
-
-### 6.5 Tick = half a year
-
-2 ticks = 1 world year. Age advances accordingly.
+These are design targets. Work through them based on what most improves the moment-to-moment experience of playing. Sam decides order each session.
 
 ---
 
-## 7. Groups
+### 0. Character Model Redesign ← implement first
 
-### 7.1 Group types
+**Problem:** The current 25-trait JSONB system is flat and undifferentiated. Traits don't map cleanly to game mechanics. Combat, economy, and social behavior all pull from the same unstructured pool. Core stats like health, attack, defense, and speed don't exist as first-class fields.
 
-1. **Families / inner circle** — not a shared entity. Per-person list of linked relationships (blood + lovers + close friends + rivals + enemies). Bond strength floats with every interaction.
-2. **Religions** — shared entities. Die when founder dies.
-3. **Political factions** — shared entities. Can split under specific conditions.
+**New Core Character Sheet — hard fields on Person:**
 
-### 7.2 Viral membership
+| Category | Fields |
+|----------|--------|
+| Identity | `name`, `age`, `gender`, `race`, `occupation` |
+| Combat *(derived, recalculated each tick)* | `max_health` (0–100), `current_health` (0–100 pool), `attack` (0–100), `defense` (0–100), `speed` (0–100) |
+| Economy | `money` (Int, rename from `wealth`), `money_invested` (Int, new) |
+| Status | `faction_id`, `religion_id`, `moral_score` (−100–100), `trauma_score`, `criminal_record` |
 
-Each religion and faction carries a **virus profile** — a set of trait thresholds that define who belongs.
+**4 Meta Trait Categories — JSONB, 0–100 each, neutral = 50:**
 
+Each trait pushes its target hard stat every tick. Above 50 = positive drift. Below 50 = negative drift. Magnitude scales with distance from 50.
+
+**BODY** → feeds combat stats
+- `strength` → pushes `attack`
+- `endurance` → pushes `max_health` + `defense` blend
+- `agility` → pushes `speed`
+- `resilience` → pushes `current_health` recovery rate
+
+**MIND** → amplifier on all trait pushes (scales how fast other traits move their targets)
+- `intelligence` — scales BODY push magnitude
+- `willpower` — resistance to trauma, forced `moral_score` changes
+- `intuition` — outcome band weighting in ambiguous interactions
+- `creativity` — group founding gate, occupation performance modifier
+
+**HEART** → relationship and group interactions
+- `charisma` — interaction scoring, group attraction rate
+- `empathy` — biases interactions toward peaceful outcomes
+- `loyalty` — faction/religion retention, betrayal resistance
+- `jealousy` — aggression trigger toward high-wealth/bond peers
+
+**DRIVE** → agentic action selection + economic behavior
+- `ambition` — agentic action frequency, leadership candidacy
+- `courage` — combat willingness, revenge action gate
+- `discipline` — money growth rate, occupation income modifier
+- `cunning` — theft success rate, manipulation interaction weight
+
+**Migration:**
+- ✅ Drop the 5-category 25-trait JSONB system from `Person.traits` — replaced in-place with 4-category 16-trait JSONB
+- ✅ Add the 5 hard combat stat columns to Person schema (`max_health`, `current_health`, `attack`, `defense`, `speed`)
+- ✅ Replace `wealth` field with `money`, add `money_invested`, add `moral_score`
+- ✅ Update shared types: `IDENTITY_ATTRIBUTES` replaced with new 4-category structure; `Person`, `DeceasedPerson`, `CharacterListItem`, `PeopleListItem` all updated
+- ✅ Update all backend services, routes, and frontend components to new field names
+- ✅ Update `character-gen.service.ts` to seed new trait structure (TRAIT_BIASES remapped to 16 new traits)
+- ✅ Add tick-phase step: after interaction resolution, derive combat stats from BODY traits + MIND amplifier (`tick/derive-stats.ts`)
+- ✅ Update all ruleset `trait_weights` references to new trait names (DEFAULT_RULESET v6, all services using `ambition`/`loyalty` instead of `leadership`/`honesty`)
+
+**Ripple test:** Raise `strength` → `attack` climbs over ticks → character wins more altercations → more traumatic outcomes for others → faction morale drops → schism pressure rises.
+
+---
+
+### 0.5 Tick → Year Architecture ← implement next
+
+**Problem:** Current tick is synchronous, blocks the request, and touches every person every call. At 1000 people a tick takes ~5s. Scaling target is 50k–100k–1M. Linear scan patterns (per-person UPDATEs, per-death `prisma.$transaction` loops, full-population happiness drift, full link load every tick) make this unreachable. Player also has no visibility into what's happening inside a tick.
+
+**Reframe:** Replace "Advance Tick" with **"Advance Year"**. One year = 2 bi-annual sub-phases + 1 year-end phase, all run inside a single async pipeline driven by **pg-boss**. Player triggers it, button blocks until done, but the work streams progress to the frontend via SSE so the player has a live heartbeat.
+
+**Cadences:**
+- **Bi-annual** (runs twice per year): interactions, events tick, deaths, births, market update, happiness drift, snapshot write
+- **Year-end** (runs once per year): aging, agentic turn, religion conversions, faction splits, memory decay, occupation income, leader extraction, group treasury funding
+
+**Player-direct actions** (`/steal`, `/gift`, `/force`) stay synchronous and immediate — they do not wait for the year pipeline.
+
+---
+
+#### Phase 0 — Foundation
+- Local Postgres (Postgres.app or `brew install postgresql@16`) — Sam needs walkthrough
+- `npm i pg-boss` in `packages/backend`
+- `prisma migrate reset --force` (DB wipe is approved)
+- pg-boss bootstrap creates its own `pgboss` schema on first run
+
+#### Phase 1 — Schema migration
+
+New tables:
+- `year_runs` — pipeline status `(id, world_id, year, phase, progress_pct, started_at, completed_at, error, message)`
+- `world_snapshots` — denormalized world view payload, 1 row per world, upserted per bi-annual
+- `event_history` — completed/manually-ended events `(event_def_id, params, started_year, ended_year, end_reason: 'expired'|'manual'|'condition_met', duration_actual)`
+
+New columns:
+- `Person.happiness_base` (Int), `Person.happiness_set_tick` (Int) — for lazy drift
+- `Person.trauma_set_tick` (Int) — for lazy decay
+- `WorldEvent.duration_years` (Int, nullable — null = indefinite), `WorldEvent.years_remaining` (Float)
+- `Religion.disbanded_at` (DateTime, nullable), `Faction.disbanded_at` (DateTime, nullable) — soft-delete
+- `World.year_count` (replaces `tick_count`), `World.bi_annual_index` (Int 0|1)
+
+#### Phase 2 — Async year pipeline
+- New endpoint `POST /api/years/advance` enqueues a pg-boss job, returns `{ year_id }` in <200ms
+- New worker `processYearJob(yearId)`:
+  1. Bi-annual A → snapshot write
+  2. Bi-annual B → snapshot write
+  3. Year-end → snapshot write
+- SSE endpoint `GET /api/years/:id/stream` streams phase progress (`year_runs` row updates emit messages)
+- Tick lock replaced by job-state lock keyed off `year_runs.status`
+- Frontend Advance Year button disabled until `year_runs.status = completed`
+
+#### Phase 3 — Performance wins (the 100× lift)
+1. **Sample interactions** — `K = 500` pairs per bi-annual regardless of population. Constant lives in `shared/`.
+2. **Bulk death pass** — single INSERT into `deceased_persons`, single batched `distributeInheritance`, single DELETE. No more per-person `prisma.$transaction` loop.
+3. **Lazy happiness/trauma** — store `(base, set_tick)`, compute on read via `effectiveHappiness(person, currentTick)` helper. Eliminates the per-person UPDATE pass entirely.
+4. **Targeted event queries** — Plague: `WHERE id IN (infected_ids)`. War: SQL join on `faction_membership`. Stop loading whole population and filtering in JS.
+5. **Drop full-population `deriveHardStats`** — only re-derive when traits actively changed (already tracked in `bulkUpdates`).
+
+**Acceptance:** 1000 people → year completes in <500ms. 10k → <5s. Profile via `timings_ms`.
+
+#### Phase 4 — Events updates
+- Add `duration_years` + `years_remaining` to event activation params
+- Bi-annual decrements `years_remaining` by 0.5
+- When ≤0: write `event_history` row (`end_reason: 'expired'`), set `is_active=false`, emit heartbeat
+- DELETE endpoint = manual end (`end_reason: 'manual'`) — player can end anytime
+- Plague/War keep internal end conditions → `end_reason: 'condition_met'`
+- New endpoint `GET /api/events/history` for completed events
+- Player can extend an event by reactivating with new duration (no auto-extend)
+
+#### Phase 5 — Leader extraction + disband
+
+New `services/leadership.service.ts`:
+- `extractLeaderCuts(prisma, worldId)` — annual. Per group: `extraction = (leader.greed / 100) × 0.20 × group.balance` → leader.money increases, group.balance decreases. Members never notice (no memories, no happiness hit).
+- `checkSmallGroupDisbands(prisma, worldId)` — bi-annual. For groups with `<20` members:
+  ```
+  disband_chance = (20 - member_count) × 0.015
+  ```
+  | Members | Per bi-annual | Per year |
+  |---|---|---|
+  | 19 | 1.5% | 3.0% |
+  | 10 | 15% | 28% |
+  | 5 | 22.5% | 40% |
+  | 1 | 28.5% | 49% |
+  Constant `SMALL_GROUP_DISBAND_RATE = 0.015` in `shared/`. On disband: leader receives full balance, members released, group soft-deleted (`disbanded_at`).
+- `promoteSuccessor(prisma, groupId)` — picks highest-alignment member, sets as leader. Called from `handlePersonDeath` for any leader death — there is **always** a leader as long as the group has members.
+
+#### Phase 6 — World snapshot + frontend
+
+`world_snapshots.payload` (JSONB):
+```ts
+{
+  year, bi_annual_index, population, total_deaths, recent_deaths_year,
+  averages: { health, happiness, money },
+  markets: { stable, standard, volatile, trends, top_event },
+  religions: {
+    top_by_count:    { id, name, value },  // member count
+    top_by_balance:  { id, name, value },  // group treasury
+    richest_leader:  { id, name, leader_name, leader_money }
+  },
+  factions: { ... same shape ... },
+  active_events: [{ id, def_id, name, years_remaining, stats: {...} }],
+  updated_at
+}
 ```
-Example:
-Church of the Iron Sun:
-  devotion: ≥ 60
-  personal_faith_score: ≥ 70
-  honesty: ≥ 40
-```
 
-**Spread:** When the antagonizer is a group member and the subject meets the virus profile, the subject joins.
+Frontend:
+- `/world` reads from snapshot — single SELECT, no aggregation
+- New `/events` route: catalog grid (activate) + active list (view/end) + history list
+- Heartbeat component subscribes to SSE, shows phase progress bar with per-phase status
+- World View polls snapshot every 2s while pipeline running, otherwise refreshes on Advance click
 
-**Drop-off:** Every tick, existing members whose traits have drifted out of the profile auto-leave.
+#### Phase 7 — Cleanup
+- Delete `/api/interactions/tick` endpoint
+- Delete obsolete per-tick passes (full-population happiness UPDATE, full-population hard-stat derive)
+- Rename `tick_count` → `year_count` everywhere it appears
+- Update `AUDIT.md` to reflect new architecture
 
-Membership is always a living count — it rises and falls with the population's trait drift.
+#### Execution order
 
-### 7.3 Virus profile origins
+`0 → 1 → 2 → 3 → 5 → 4 → 6 → 7`
 
-- **Emergent groups:** snapshot of the founder's traits at founding (+tunable tolerance band)
-- **Player-created groups:** manually authored profile
-- Both allowed in the same world.
+Phase 5 before Phase 4 because leader extraction reuses the year-end pipeline slot — want it stable before adding event-timer logic on top. Phase 6 last so the frontend isn't a moving target during backend work. Each phase ships separately, gets tested at small population, then move on.
 
-### 7.4 Group formation
+#### Decisions locked in (do not re-litigate)
+- 2 bi-annuals + 1 year-end per Advance Year click
+- Single year only — no "advance N years" / auto-play
+- Block Advance Year button until pipeline completes
+- Snapshot refresh **per bi-annual** (3× per year-advance)
+- Player-direct actions (steal/gift/force) stay immediate
+- Saves are out of scope for this phase
+- Greed-based extraction: `(greed / 100) × 0.20`, members never notice
+- Always a leader; leader = highest-alignment surviving member
+- Small-group disband formula: `(20 - members) × 0.015` per bi-annual
+- pg-boss for queue (Postgres-backed, no Redis)
+- SSE for heartbeat (local backend, no WebSocket needed)
+- DB wipe approved; no data preservation needed
 
-Three paths, with emergent as the spine:
-
-1. **Emergent** (default) — when a person clears capability gates AND a dramatic event fires (high-score outcome in a relevant interaction), a new group is born. Claude names it and writes a founding headline.
-2. **Player-created** via God Mode
-3. **Event-driven** — specific ruleset interactions (schism, revelation, manifesto) can force a new group
-
-### 7.5 Caps
-
-Maximum **1 group per 100 people**, per group type (religions and factions counted separately).
-
-### 7.6 Lifecycle
-
-- **Religions** die instantly when the founder dies. (Personality cult; a fragile and deliberately fragile institution — assassinate the prophet, you kill the faith.)
-- **Factions** survive past their leader's death if a worthy successor exists (passes leadership capability gate).
-- **Splits** happen when a member's trait alignment with the group's virus profile exceeds the current leader's alignment by enough to overcome the **founder buffer bonus** (+20-30 alignment points), sustained for **5 years (10 ticks)**.
+**Ripple test:** Player activates a Plague with `duration=4` → year 1 bi-annual A: 12 people infected, snapshot updates → bi-annual B: 8 more infected, 2 dead, snapshot updates → year-end: aging + leader extraction (greedy religion leader skims 18% of balance into personal money) → year 2 starts, player watches plague counts climb in heartbeat → year 4 ends, plague auto-expires with `event_history` row. Player never blocks longer than ~500ms per phase.
 
 ---
 
-## 8. Capability Gates
+### 1. Economy — Real Income Model
 
-Role and action eligibility thresholds. Defined per-rule in the ruleset JSON.
+**Problem:** Wealth is currently meaningless as a lever. Base income is a hardcoded 20k/tick placeholder. Occupation does nothing after character creation.
 
-| Action | Example gate |
-|---|---|
-| Found a religion | leadership ≥ 70 + persuasion ≥ 70 + personal Faith score ≥ 80 + dramatic event |
-| Found a faction | leadership ≥ 70 + ambition ≥ 70 + dramatic event |
-| Lead a group | leadership ≥ 60 + charisma ≥ 60 |
-| Challenge a leader | leadership ≥ current leader's leadership |
-| Commit assassination | cunning ≥ 70 + combat ≥ 60 |
-| Prophet-level fervor | devotion ≥ 90 + charisma ≥ 80 |
+**Design:**
+- Replace flat 20k with occupation-derived income. Each archetype has a base income range (farmer earns little; merchant earns market-sensitive; noble earns from faction/land holdings). Scale by relevant traits (craftsmanship for artisan, cunning for merchant, leadership for noble).
+- **Faction taxation.** If a faction has `cost_per_tick`, deduct wealth from all members each tick. Route that wealth to the faction treasury. Faction treasury funds faction actions (war, propaganda).
+- **Theft.** High-cunning + high-street_smarts people can rob others as an interaction type. Creates crime record, wealth transfer, grudge memory.
+- **Gifting/tribute.** Agentic action: high-empathy people gift wealth to struggling inner-circle members. High-ambition people demand tribute from subordinates.
+- **Inheritance.** Already built. Ensure it surfaces correctly in the Chronicle.
 
-Gates are tunable per world.
+**Ripple test:** Raise tyranny → faction dues increase → members go broke → they auto-leave the faction → faction loses membership → schism threshold drops → faction collapses.
 
 ---
 
-## 9. Births
+### 2. Catastrophic World Events
 
-### 9.1 Trigger
+**Problem:** War, plague, famine exist as global trait children (sliders) but nothing fires automatically. God Mode is the only way to trigger them. There are no player-instigated macro-scale events with mechanical weight.
 
-**Interaction-driven only.** A specific "conception" interaction type between two people can initiate pregnancy, tracked over ticks until birth.
-
-No random sim-seeded births for population upkeep; if population dips too low, the player can manually inject new people.
-
-### 9.2 Eligibility
-
-- Any age
-- Any pairing
-- Partners need not be in a formal relationship (bastards and affairs are in scope)
-
-### 9.3 Inheritance
-
-- **Traits:** 50% average of the two parents + variance
-- **Race:** mixed if parents differ
-- **Religion:** inherits from parents at birth (can drift out later via virus profile drift)
-- **Family/inner-circle links:** auto-created for both parents
+**Design:**
+- **Player-dropped events (God Mode panel).** New buttons: Drop Plague, Declare War, Trigger Famine, Nuke. Each one applies a preset delta to global traits + queues reportage-voice headlines + optionally kills N% of the population.
+- **Cascade thresholds.** When a global trait child crosses a threshold, the engine auto-fires a WorldMemory entry and a reportage headline. E.g., `plague.infection_rate < -70` → "Great Plague sweeps the land" → next tick mortality rate rises automatically.
+- **War between factions.** Two active factions with low alignment and high military_strength + territorial_control can enter a "war state." War ticks produce more violent interaction outcomes between opposing members. Victory condition: one faction's membership drops to 0 or one leader dies and no heir qualifies.
+- **Ripple test:** Player drops a plague → mortality rate spikes → key religion founder dies → religion dissolves → members lose faith → faith.devotion drops → spiritual_comfort drops → more desperate interactions → crime surge.
 
 ---
 
-## 10. Memory System
+### 3. Revenge & Legal Consequences
 
-### 10.1 Feedback loops
+**Problem:** Murders create a crime record and a grudge memory in the victim's family, but nothing mechanically acts on it. There are no legal consequences beyond the crime record entry.
 
-Two layers, both active:
-
-1. **Trauma-modifier** — traumatic memories apply small permanent trait debuffs; euphoric memories apply buffs. Accumulating memory shifts who a person is over time.
-2. **Relationship-weighted** — memories tagged with the involved antagonizer reweight future interaction scoring when those two people meet again. Grudges, loyalty, debts, crushes.
-
-### 10.2 Persistence
-
-**Memory length scales with outcome magnitude.** Extreme events (top/bottom outcome bands) persist for life; mid-band events fade over time. Only the big stuff echoes forward.
+**Design:**
+- **Revenge action.** Agentic action: if person has a grudge memory against a murderer (counterparty_id = killer), and their combat + cunning + courage clear a threshold, they attempt revenge. Revenge attempt is a forced interaction (combat-heavy outcome bands). Can kill the original murderer or fail and create a new grudge in the other direction.
+- **Legal action.** If the world has a faction with `stability` role, a murder can trigger a "trial" interaction between the murderer and a faction leader. Outcome bands: execution (death), imprisonment (wealth drain + memory), acquittal (morality debuff to faction). Gate: faction must have membership > 20 and tyranny.stability > 50.
+- **Blood feud.** If a family member revenge-kills, and the original murderer's family has a grudge back, flag the relationship pair as BLOOD_FEUD. Both families get interaction weight toward each other boosted. The feud can persist across generations.
+- **Ripple test:** Person A murders Person B → B's child has grudge memory (weight 100) → agentic action selects revenge attempt → B's child succeeds and kills A → A's spouse now has revenge memory → blood feud flagged.
 
 ---
 
-## 11. Tone & Narrative
+### 4. Chronicle & Biography Mode
 
-### 11.1 Voice routing
+**Problem:** The chronicle surfaces yearly headline cards. There's no way to read a *character's* full life story, or to see the history of a world as a flowing narrative.
 
-Claude's voice flexes by event type. Each outcome band and event type carries a `tone` field.
-
-| Event type | Voice |
-|---|---|
-| Personal scandals, rises/falls, addictions, affairs | Tabloid |
-| Deaths, births, quiet personal moments | Literary |
-| Group events (religion founded, faction split, war) | Epic |
-| Bulk-effect chaos (plague, nukes, crashes) | Reportage |
-| Decade summaries | Epic |
-
-### 11.2 Content ceiling
-
-**Fully unflinching.** Overdose, torture, assassination, abuse, sexual violence are rendered directly when the narrative calls for it. No gratuitous horror, but no squeamish euphemism either.
+**Design:**
+- **Life biography.** A button on CharacterDetail (or deceased person card) that calls Claude with the character's full LifeDecadeSummary chain + significant memories. Claude returns a 3–5 paragraph narrative biography in literary voice. Cached in DB so it only generates once per character.
+- **World history page.** A page that renders YearlyReports + WorldMemory entries + GroupMemory events as a flowing timeline. Decade summaries anchor each 10-year section. Filter by: force, group, person, year range.
+- **Family tree.** On CharacterDetail, render a basic 3-generation tree using `parent_a_id`, `parent_b_id`, and inner-circle `child` links. Clickable to navigate to each ancestor/descendant.
+- **Ripple test:** Player reads a 200-year-old character's biography. Claude threads decade summaries into a coherent arc. The reader sees how this person's trauma at age 30 shaped their later radicalization.
 
 ---
 
-## 12. Scale
+### 5. Scale — Town & Civilization Tiers
 
-Scale is a **dial, not a bet.** Each world picks its tier at creation.
+**Problem:** Tick runs synchronously in the request cycle. Works fine at intimate scale (100–500 people). At town (500–5k) it becomes slow. At civilization (5k–50k) it blocks the server.
 
-| Tier | Population | Feel |
-|---|---|---|
-| Intimate | 100-500 | Every person trackable; current experience |
-| Town | 500-5,000 | Pagination required, personal but noisy |
-| Civilization | 5,000-50,000 | Macro view primary, dive into individuals via filters |
-
-### 12.1 What 50k requires
-
-1. Batched DB writes — no per-person UPDATEs
-2. Tick processing in background jobs, not request cycle
-3. Claude API calls are strictly aggregate — no per-interaction calls
-4. Filter-first UI — no scrolling 50k cards
-5. Player experience shifts: you're watching *culture* emerge, not tracking 50k individuals
+**Design:**
+- **Background tick job.** Add a `tick` job kind to the TickJob queue (same Postgres-as-queue pattern already used for headlines). POST `/api/time/advance` enqueues the tick instead of executing it synchronously. Frontend polls the job status.
+- **Batched DB writes.** Replace per-person UPDATE loops with JSONB bulk SQL updates where possible. Prisma's `updateMany` where applicable; raw SQL for trait JSONB merges.
+- **Per-interaction Claude calls capped.** At town/civilization scale, no per-interaction narrative. Claude calls are aggregate-only (year headlines, decade summaries). Per-interaction narrative only at intimate scale.
+- **Filter-first UI.** At town/civilization scale, no scrolling card grid. People page becomes search-first: player types a name, applies filters, results surface. Dashboard shows aggregate stats, not individual cards.
+- **Population cap enforcement.** 1 group per 100 people enforced server-side. Warn player when approaching tier limits.
 
 ---
 
-## 13. Economy / Market
+### 6. Occupation as a Living System
 
-Existing: market index, trend, volatility, affected by force multipliers. Keep.
+**Problem:** Occupation is a demographic label set at character creation and never changes. It has no mechanical effect after birth.
 
-**Gap:** Wealth flow between people. Currently the only wealth delta source is interaction outcomes. Consider: inheritance at death, taxation (if a faction runs it), theft/gift interactions, faction dues. Flagged for later.
-
----
-
-## 14. The Second-Order Effect Rule
-
-**Every player action must have at least one emergent ripple the player didn't explicitly request.** This is what makes full control still feel surprising. Examples of ripples built into the architecture:
-
-- **Memory echoes:** You assassinate someone. Their child's grudge memory reweights every future interaction involving the killer's bloodline.
-- **Viral group drift:** You buff a person's charisma. They found a religion. Its virus profile infects people you never looked at. 30 ticks later a splinter faction is terrorizing a city.
-- **Trait cascades:** Crank Scarcity → desperate crime → trauma memories → shifted traits → shifted group memberships → reshaped ideology.
-- **Antagonizer randomness:** The 40% wild-card pairing disrupts any setup with an outsider you didn't plan for.
-
-When adding new systems, ask: *what's the ripple?* If an action has zero second-order effects, it's not finished.
+**Design:**
+- **Occupation drift.** Each tick, characters can change occupation based on trait alignment. High intelligence + curiosity → scholar drift. High combat + strength → soldier drift. High charisma + ambition → noble or faction leader track.
+- **Occupation gates.** Certain interactions only available to specific occupations (priests can found religions, soldiers can commit war crimes, merchants can do trade interactions).
+- **Occupation income tiers.** Noble > merchant > scholar/priest > artisan > farmer/wanderer. Modulated by world forces (Scarcity drops farmer income, War boosts soldier income).
 
 ---
 
-# Next Steps
+### 7. Multi-City Geography
 
-A prioritized starting sequence. Each step is a discrete chunk of work with visible output.
+**Problem:** City schema exists (one per world) but geography has zero mechanical effect. All interactions are world-flat.
 
-### Phase 0 — Align existing code with this doc
-
-1. **Audit current schema vs doc.** Map current DB tables and fields to the person model in §4. Flag every mismatch (wrong attribute names, missing demographics, extra stats). This is the refactor budget.
-2. **Pull `death_age` into Person.** Roll at birth from race lifespan. Drive natural death off this instead of age-only checks.
-3. **Collapse 100 traits to 25 identity attributes.** Replace the current 25-category trait block with §4.2. Keep the 24 world-rule values as-is for now.
-4. **Make the engine fully data-driven.** Remove any hardcoded stat references from interaction resolution code. All effects must look up stats by string from the ruleset, silently skipping missing ones.
-
-### Phase 1 — Core loop upgrades
-
-5. **Antagonizer selection with 60/40 hybrid.** Implement the inner-circle link table first, then the weighted picker.
-6. **Asymmetric outcomes.** Every interaction outcome band gets two effect packets. Extend the ruleset schema and resolution code.
-7. **Memory persistence scaling.** Tag memories by outcome magnitude, add decay logic to the memory reader so mid-band events fade.
-8. **Memory feedback — trauma modifier + grudge weighting.** Trauma memories permanently shift traits; per-person memories reweight future pairings.
-
-### Phase 2 — Groups
-
-9. **Religion & Faction entities.** Schema, CRUD, virus profile storage.
-10. **Viral membership engine.** Tick-time join check (antagonizer is member + subject meets profile) and drop-off check (existing members drift out).
-11. **Group formation.** Emergent (capability gate + dramatic event) + player-created (God Mode) + event-driven (ruleset interaction).
-12. **Religion-founder death handler.** Leader dies → religion dies → all members get a "faith lost" memory.
-13. **Faction split logic.** Track per-member alignment with profile; detect sustained lead over founder with buffer.
-
-### Phase 3 — God Mode upgrades
-
-14. **Bulk filter actions.** Filter builder UI (age, race, occupation, religion, trait thresholds) + delta application.
-15. **Force-specific interactions.** UI to pick subject + antagonizer + interaction type and run.
-16. **Manual event authoring.** Add custom memory with stat delta from a single form.
-
-### Phase 4 — World designer
-
-17. **Rule library.** First-class storage for rules. Tag rules as reusable.
-18. **World creation flow.** Pick rule set (4/6/8), starting population tier, initial groups, demographic mix.
-19. **Multi-world switching.** Each world is a separate state. Player can run multiple in parallel or archive/revive.
-
-### Phase 5 — Narrative upgrades
-
-20. **Tone-routed headline generation.** Each outcome/event type carries a tone tag; the headline prompt picks voice accordingly.
-21. **Decade summaries per world.** Running context for Claude so long-running worlds stay coherent.
-
-### Phase 6 — Scale
-
-22. **Batched tick processing.** Bulk DB writes, parallel interaction resolution, background job runner.
-23. **Filter-first UI.** Search, filter, surface-via-headline as primary navigation.
-24. **Scale tier selector at world creation.**
-
-### Phase 7 — Births
-
-25. **Conception interaction type.** Pregnancy tracking state on person. Child creation with 50/50 inheritance.
+**Design:**
+- This is a later-stage feature. Only build it if intimate/town-tier experience feels lacking a geography dimension.
+- When built: each person belongs to a city. Antagonizer selection weights same-city people more heavily. War between factions is city-scoped. Plagues spread city-to-city.
+- Pre-req: drop `@@unique(world_id)` on City, add `city_id` FK on Person.
 
 ---
 
-## Recommended first move
+## Design Rules for New Code
 
-**Phase 0, step 1** — the schema audit. Before building anything new, know exactly what has to change in the existing code. That audit produces the concrete refactor plan for Phase 0 steps 2-4, which unblocks everything else.
+These apply to every new feature, every session:
+
+- **Shared types first.** If it crosses the wire, it lives in `packages/shared/src/types.ts` before backend or frontend.
+- **Verify the path.** Multiple worktrees exist. Confirm you're in `just for fun/AI GOD/packages/...` before any edit.
+- **No hardcoded stat names in logic.** All effects reference stats by string from the ruleset. Missing stat = silent no-op.
+- **Typecheck before done.** Both packages must pass `tsc --noEmit` before any work is declared complete.
+- **Every feature needs a ripple.** If a new mechanic has no second-order effect, it is not finished.
+- **Match existing patterns.** Routes → services → shared types. Don't invent new conventions. Check how an existing service does it and mirror.
+- **`world_id` on everything.** Every per-world entity is scoped by `world_id`. Never leak across worlds.
+- **Plan before code.** Show the implementation plan for each step before writing files. Wait for approval.
+- **Don't commit** unless Sam explicitly asks.

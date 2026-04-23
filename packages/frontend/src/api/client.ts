@@ -11,7 +11,6 @@ import type {
   PaginatedResponse,
   CriminalRecordEntry,
   RulesetDef,
-  TickResult,
   EconomyState,
   DeceasedPerson,
   BulkActionRequest,
@@ -31,7 +30,7 @@ export interface RipListParams {
   year_min?: number;
   year_max?: number;
   cause?:    'interaction' | 'old_age' | 'health';
-  sort?:     'died_at' | 'world_year' | 'age_at_death' | 'final_wealth' | 'name';
+  sort?:     'died_at' | 'world_year' | 'age_at_death' | 'final_money' | 'name';
   order?:    'asc' | 'desc';
 }
 
@@ -302,11 +301,20 @@ export const api = {
   },
 
   interactions: {
-    tick: () =>
-      request<TickResult>('/interactions/tick', { method: 'POST' }),
-
     force: (body: { subject_id: string; antagonist_id: string; interaction_type_id: string }) =>
       request<ForceInteractionResult>('/interactions/force', {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+
+    steal: (body: { thief_id: string; victim_id: string }) =>
+      request<StealResult>('/interactions/steal', {
+        method: 'POST',
+        body:   JSON.stringify(body),
+      }),
+
+    gift: (body: { donor_id: string; recipient_id: string; amount: number }) =>
+      request<GiftResult>('/interactions/gift', {
         method: 'POST',
         body:   JSON.stringify(body),
       }),
@@ -324,16 +332,6 @@ export const api = {
     setVolatility: (volatility: number) =>
       request<{ market_volatility: number }>(
         '/economy/volatility', { method: 'PATCH', body: JSON.stringify({ volatility }) },
-      ),
-
-    setMultipliers: (multipliers: Record<string, number>) =>
-      request<{ global_trait_multipliers: Record<string, number> }>(
-        '/economy/multipliers', { method: 'PATCH', body: JSON.stringify({ multipliers }) },
-      ),
-
-    setGlobalTraits: (global_traits: Record<string, number>) =>
-      request<{ global_traits: Record<string, number> }>(
-        '/economy/global-traits', { method: 'PATCH', body: JSON.stringify({ global_traits }) },
       ),
 
     patchMarket: (
@@ -390,12 +388,6 @@ export const api = {
   time: {
     getState: () => request<WorldStateResponse>('/time'),
 
-    advance: (years: number) =>
-      request<AdvanceResult>('/time/advance', {
-        method: 'POST',
-        body:   JSON.stringify({ years }),
-      }),
-
     rewind: (years: number) =>
       request<RewindResult>('/time/rewind', {
         method: 'POST',
@@ -441,7 +433,66 @@ export const api = {
       return request<YearlyReportRow[]>(`/time/reports?${q.toString()}`);
     },
   },
+
+  years: {
+    advance: () =>
+      request<{ year_run_id: string; year: number }>('/years/advance', { method: 'POST' }),
+
+    getStatus: (id: string) =>
+      request<YearRunRow>(`/years/${id}`),
+
+    // Phase 6 — current in-flight year-run, or null. Used by PipelineProvider
+    // so every page knows whether the Advance button should be locked.
+    running: () =>
+      request<YearRunRow | null>('/years/running'),
+
+    // SSE — caller must construct EventSource directly (fetch can't stream).
+    streamUrl: (id: string) => `/api/years/${id}/stream`,
+  },
+
+  events: {
+    list: () =>
+      request<ActiveEventSummary[]>('/events'),
+
+    history: () =>
+      request<EventHistoryRow[]>('/events/history'),
+
+    activate: (event_def_id: string, params: Record<string, unknown>, duration_years?: number | null) =>
+      request<ActiveEventSummary>('/events', {
+        method: 'POST',
+        body: JSON.stringify({ event_def_id, params, duration_years }),
+      }),
+
+    deactivate: (eventId: string) =>
+      request<{ success: true }>(`/events/${eventId}`, { method: 'DELETE' }),
+  },
 };
+
+// ── Year run types ───────────────────────────────────────────
+
+export type YearRunPhase = 'bi_annual_a' | 'bi_annual_b' | 'year_end' | 'completed' | 'failed';
+export type YearRunStatus = 'running' | 'completed' | 'failed';
+
+export interface YearRunRow {
+  id:           string;
+  world_id:     string;
+  year:         number;
+  phase:        YearRunPhase;
+  progress_pct: number;
+  status:       YearRunStatus;
+  error:        string | null;
+  message:      string | null;
+  started_at:   string;
+  completed_at: string | null;
+}
+
+export interface YearRunUpdate {
+  year_run_id:  string;
+  phase:        YearRunPhase;
+  progress_pct: number;
+  status:       YearRunStatus;
+  message?:     string;
+}
 
 // ── Jobs / Reports types ─────────────────────────────────────
 
@@ -473,29 +524,101 @@ export interface YearlyReportRow {
   deaths_by_cause:     Record<string, number>;
   market_index_start:  number;
   market_index_end:    number;
-  force_scores:        Record<string, number>;
   created_at:          string;
 }
 
-// ── World types ──────────────────────────────────────────────
+// ── World events types ───────────────────────────────────────
+
+export interface ActiveEventSummary {
+  id:               string;
+  event_def_id:     string;
+  params:           Record<string, unknown>;
+  started_tick:     number;
+  started_year:     number;
+  duration_years?:  number | null;
+  years_remaining?: number;
+  is_active:        boolean;
+}
+
+// Phase 4 — completed event archive row.
+export interface EventHistoryRow {
+  id:              string;
+  event_def_id:    string;
+  params:          Record<string, unknown>;
+  started_year:    number;
+  ended_year:      number;
+  end_reason:      'expired' | 'manual' | 'condition_met';
+  duration_actual: number | null;
+  created_at:      string;
+}
+
+// ── World snapshot (Phase 6 denormalized payload) ────────────
+
+export interface SnapshotMarkets {
+  stable:   { index: number; trend: number };
+  standard: { index: number; trend: number };
+  volatile: { index: number; trend: number };
+}
+
+export interface SnapshotGroupRef {
+  id:    string;
+  name:  string;
+  value: number;
+}
+
+export interface SnapshotRichestLeader {
+  id:           string;
+  name:         string;
+  leader_name:  string;
+  leader_money: number;
+}
+
+export interface SnapshotGroupSection {
+  top_by_count:   SnapshotGroupRef[];
+  top_by_balance: SnapshotGroupRef[];
+  richest_leader: SnapshotRichestLeader | null;
+}
+
+export interface SnapshotActiveEvent {
+  id:              string;
+  def_id:          string;
+  params:          Record<string, unknown>;
+  started_year:    number;
+  duration_years:  number | null;
+  years_remaining: number;
+  stats: {
+    infected_count: number;
+  };
+}
 
 export interface WorldSnapshot {
-  current_year:             number;
-  tick_count:               number;
-  total_deaths:             number;
-  market_index:             number;
-  market_trend:             number;
-  market_volatility:        number;
-  market_stable_index:      number;
-  market_stable_trend:      number;
-  market_volatile_index:    number;
-  market_volatile_trend:    number;
-  population:               number;
-  avg_health:               number;
-  avg_wealth:               number;
-  force_scores:             Record<string, number>;
-  global_traits:            Record<string, number>;
-  global_trait_multipliers: Record<string, number>;
+  // Pipeline-bound fields (snapshot-time)
+  year:               number;
+  bi_annual_index:    number;
+  population:         number;
+  total_deaths:       number;
+  recent_deaths_year: { year: number; total: number; by_cause: Record<string, number> };
+  averages:           { health: number; happiness: number; money: number };
+  markets:            SnapshotMarkets;
+  religions:          SnapshotGroupSection;
+  factions:           SnapshotGroupSection;
+  active_events:      SnapshotActiveEvent[];
+  snapshot_at:        string | null;
+
+  // World-level live fields (refreshed on every read)
+  current_year: number;
+  year_count:   number;
+
+  // ── Legacy flat fields (always emitted by /api/world for back-compat) ──
+  market_index:          number;
+  market_trend:          number;
+  market_stable_index:   number;
+  market_stable_trend:   number;
+  market_volatile_index: number;
+  market_volatile_trend: number;
+  avg_health:            number;
+  avg_happiness:         number;
+  avg_money:             number;
 }
 
 // ── Time types ───────────────────────────────────────────────
@@ -523,14 +646,6 @@ export interface WorldStateResponse {
   decade_headlines: Headline[];
 }
 
-export interface AdvanceResult {
-  previous_year:  number;
-  current_year:   number;
-  deaths:         string[];
-  /** One YearlyReport per year advanced (idempotent — reuses existing rows). */
-  yearly_reports: YearlyReportRow[];
-}
-
 export interface RewindResult {
   previous_year: number;
   current_year:  number;
@@ -548,6 +663,20 @@ export interface ForceInteractionResult {
   creates_memory:           boolean;
   subject_traits_changed:    Record<string, number>;
   antagonist_traits_changed: Record<string, number>;
+}
+
+export interface StealResult {
+  stolen:      number;
+  thief_name:  string;
+  victim_name: string;
+  new_bond:    number | null;
+}
+
+export interface GiftResult {
+  amount:         number;
+  donor_name:     string;
+  recipient_name: string;
+  new_bond:       number | null;
 }
 
 export interface RulesetListItem {

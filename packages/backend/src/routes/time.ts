@@ -1,19 +1,21 @@
 // ============================================================
 // TIME ROUTES
 // GET  /api/time                         — current world state + recent annual headlines
-// POST /api/time/advance                 — { years: number }  (sync, returns YearlyReport(s))
 // POST /api/time/rewind                  — { years: number }
 // GET  /api/time/headlines               — ?type=ANNUAL|DECADE&category=...&yearFrom=...&yearTo=...
 // POST /api/time/headlines/generate      — { year? | decadeStart? }  (queued)
 // GET  /api/time/jobs/:id                — poll a job's status
 // GET  /api/time/jobs                    — list recent jobs for active world
 // GET  /api/time/reports                 — list YearlyReports for active world
+//
+// /advance was removed in Phase 7 cleanup — year advancement is now
+// async via /api/years/advance (one year per click, no multi-year skip).
 // ============================================================
 
 import { Router } from 'express';
 import { z } from 'zod';
 import { JobStatus } from '@prisma/client';
-import { getActiveWorld, advanceTime, rewindTime, getHeadlines, getActiveWorldId } from '../services/time.service';
+import { getActiveWorld, rewindTime, getHeadlines, getActiveWorldId } from '../services/time.service';
 import { enqueueJob, getJob, listJobs } from '../services/jobs.service';
 import prisma from '../db/client';
 import { validate } from '../middleware/validate';
@@ -34,18 +36,6 @@ router.get('/', async (_req, res) => {
 
   res.json({ ...state, recent_headlines: recentHeadlines, decade_headlines: decadeHeadlines });
 });
-
-// POST /api/time/advance  — synchronous, fast, no Claude. Returns the
-// YearlyReport(s) produced by the advance. Narrative headlines are opt-in
-// via POST /api/time/headlines/generate.
-router.post(
-  '/advance',
-  validate(z.object({ years: z.number().int().min(1).max(500) })),
-  async (req, res) => {
-    const result = await advanceTime(req.body.years);
-    res.json(result);
-  },
-);
 
 // POST /api/time/rewind
 router.post(

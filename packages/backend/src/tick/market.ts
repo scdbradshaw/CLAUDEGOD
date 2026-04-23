@@ -155,15 +155,15 @@ export async function updateThreeMarkets(
   //               = 20000 + 4000*R
   await prisma.$executeRaw`
     UPDATE persons SET
-      wealth = wealth
-               + ${BASE_INCOME}::float
-               + ${INVEST_AMOUNT}::float * CASE market_bucket
+      money = money
+               + ${BASE_INCOME}::int
+               + ROUND(${INVEST_AMOUNT}::float * CASE market_bucket
                    WHEN 'stable'   THEN ${sR}::float
                    WHEN 'volatile' THEN ${vR}::float
                    ELSE                 ${stR}::float
-                 END,
+                 END)::int,
       updated_at = NOW()
-    WHERE world_id = ${worldId}::uuid AND health > 0
+    WHERE world_id = ${worldId}::uuid AND current_health > 0
   `;
 
   // 3. Count members + pull one sample name per bucket (for highlights)
@@ -174,7 +174,7 @@ export async function updateThreeMarkets(
       COUNT(*)                                                  AS cnt,
       (array_agg(name ORDER BY random()))[1]                   AS sample_name
     FROM persons
-    WHERE world_id = ${worldId}::uuid AND health > 0
+    WHERE world_id = ${worldId}::uuid AND current_health > 0
     GROUP BY market_bucket
   `;
 
@@ -331,13 +331,13 @@ export async function updateMarketPhase(
   if (Math.abs(marketReturn) > 0.0005) {
     await prisma.$executeRaw`
       UPDATE persons SET
-        wealth = wealth * (1 + ${marketReturn} * (
+        money = ROUND(money * (1 + ${marketReturn} * (
           0.5
-          + COALESCE((traits->>'craftsmanship')::float, 50) / 200.0
-          + COALESCE((traits->>'cunning')::float,       50) / 200.0
-        )),
+          + COALESCE((traits->>'discipline')::float, 50) / 200.0
+          + COALESCE((traits->>'cunning')::float,    50) / 200.0
+        )))::int,
         updated_at = NOW()
-      WHERE world_id = ${worldId}::uuid AND health > 0 AND wealth > 0
+      WHERE world_id = ${worldId}::uuid AND current_health > 0 AND money > 0
     `;
   }
 

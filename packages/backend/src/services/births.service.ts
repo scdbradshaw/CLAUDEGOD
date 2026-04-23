@@ -81,7 +81,7 @@ export async function processBirths(
         // pregnancy resolved without a child — the row stays in the archive
         // so the UI can still surface "lost pregnancy" later if we want.
         const parents = await tx.person.findMany({
-          where:  { id: { in: [preg.parent_a_id, preg.parent_b_id] }, health: { gt: 0 } },
+          where:  { id: { in: [preg.parent_a_id, preg.parent_b_id] }, current_health: { gt: 0 } },
           select: {
             id: true, name: true, race: true, religion: true, traits: true, age: true,
           },
@@ -124,9 +124,9 @@ export async function processBirths(
             relationship_status: draft.relationship_status,
             religion:            draft.religion,
             criminal_record:     draft.criminal_record as unknown as Prisma.InputJsonValue,
-            health:              draft.health,
+            current_health:      draft.current_health ?? 100,
             physical_appearance: draft.physical_appearance,
-            wealth:              draft.wealth,
+            money:               draft.money ?? 0,
             traits:              draft.traits as unknown as Prisma.InputJsonValue,
             global_scores:       draft.global_scores as unknown as Prisma.InputJsonValue,
             world_id:            worldId,

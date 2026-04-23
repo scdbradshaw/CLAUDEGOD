@@ -97,7 +97,7 @@ export default function ForceInteractionPanel() {
                 <option value="">— select subject —</option>
                 {chars.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.name} (age {c.age}, hp {c.health})
+                    {c.name} (age {c.age}, hp {c.current_health})
                   </option>
                 ))}
               </select>
@@ -116,7 +116,7 @@ export default function ForceInteractionPanel() {
                   .filter((c) => c.id !== subjectId)
                   .map((c) => (
                     <option key={c.id} value={c.id}>
-                      {c.name} (age {c.age}, hp {c.health})
+                      {c.name} (age {c.age}, hp {c.current_health})
                     </option>
                   ))}
               </select>

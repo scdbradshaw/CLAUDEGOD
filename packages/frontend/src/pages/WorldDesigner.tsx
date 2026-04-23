@@ -231,7 +231,7 @@ function WorldCard({ world }: { world: WorldListItem }) {
           Deaths <span className="text-zinc-300">{world.total_deaths}</span>
         </span>
         <span>
-          Ticks <span className="text-zinc-300">{world.tick_count}</span>
+          Years <span className="text-zinc-300">{world.year_count}</span>
         </span>
         <span>
           Tier <span className="text-zinc-300 capitalize">{world.population_tier}</span>

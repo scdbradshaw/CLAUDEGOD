@@ -36,17 +36,17 @@ router.get('/', async (req: Request, res: Response) => {
       take:    limit,
       orderBy: { updated_at: 'desc' },
       select: {
-        id:            true,
-        name:          true,
-        age:           true,
-        health:        true,
-        wealth:        true,
-        updated_at:    true,
-        global_scores: true,
-        traits:        true,
-        occupation:    true,
-        race:          true,
-        religion:      true,
+        id:             true,
+        name:           true,
+        age:            true,
+        current_health: true,
+        money:          true,
+        updated_at:     true,
+        global_scores:  true,
+        traits:         true,
+        occupation:     true,
+        race:           true,
+        religion:       true,
       },
     }),
     prisma.person.count({ where: { world_id: world.id } }),
@@ -96,8 +96,8 @@ router.get('/search', async (req: Request, res: Response) => {
   const SORT_FIELD_MAP: Record<string, keyof Prisma.PersonOrderByWithRelationInput> = {
     name:       'name',
     age:        'age',
-    wealth:     'wealth',
-    health:     'health',
+    money:          'money',
+    current_health: 'current_health',
     updated_at: 'updated_at',
   };
   const orderBy: Prisma.PersonOrderByWithRelationInput = {
@@ -105,8 +105,8 @@ router.get('/search', async (req: Request, res: Response) => {
   };
 
   const where: Prisma.PersonWhereInput = { world_id: world.id };
-  if (status === 'alive') where.health = { gt: 0 };
-  if (status === 'dead')  where.health = { equals: 0 };
+  if (status === 'alive') where.current_health = { gt: 0 };
+  if (status === 'dead')  where.current_health = { equals: 0 };
   if (ageMin !== undefined || ageMax !== undefined) {
     where.age = {
       ...(ageMin !== undefined ? { gte: ageMin } : {}),
@@ -124,17 +124,17 @@ router.get('/search', async (req: Request, res: Response) => {
     prisma.person.findMany({
       where, skip, take: limit, orderBy,
       select: {
-        id:            true,
-        name:          true,
-        age:           true,
-        gender:        true,
-        race:          true,
-        religion:      true,
-        health:        true,
-        wealth:        true,
-        traits:        true,
-        updated_at:    true,
-        global_scores: true,
+        id:             true,
+        name:           true,
+        age:            true,
+        gender:         true,
+        race:           true,
+        religion:       true,
+        current_health: true,
+        money:          true,
+        traits:         true,
+        updated_at:     true,
+        global_scores:  true,
         faction_memberships: {
           select: { faction: { select: { id: true, name: true, is_active: true } } },
         },
@@ -233,10 +233,10 @@ router.get('/:id/lineage', async (req: Request, res: Response) => {
   const person = await prisma.person.findUnique({
     where:  { id: req.params.id },
     select: {
-      parent_a: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
-      parent_b: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
-      children_a: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
-      children_b: { select: { id: true, name: true, age: true, health: true, race: true, religion: true } },
+      parent_a: { select: { id: true, name: true, age: true, current_health: true, race: true, religion: true } },
+      parent_b: { select: { id: true, name: true, age: true, current_health: true, race: true, religion: true } },
+      children_a: { select: { id: true, name: true, age: true, current_health: true, race: true, religion: true } },
+      children_b: { select: { id: true, name: true, age: true, current_health: true, race: true, religion: true } },
     },
   });
   if (!person) { res.status(404).json({ error: 'Person not found' }); return; }
@@ -371,12 +371,12 @@ router.post('/bulk-kill',
       const count = req.body.count as number;
 
       const targets = await prisma.$queryRaw<
-        Array<{ id: string; name: string; age: number; wealth: number }>
+        Array<{ id: string; name: string; age: number; money: number }>
       >(
         Prisma.sql`
-          SELECT id, name, age, wealth
+          SELECT id, name, age, money
           FROM persons
-          WHERE world_id = ${world.id}::uuid AND health > 0
+          WHERE world_id = ${world.id}::uuid AND current_health > 0
           ORDER BY RANDOM()
           LIMIT ${Prisma.raw(String(count))}
         `
@@ -397,7 +397,7 @@ router.post('/bulk-kill',
             world_year:   world.current_year,
             cause:        'god_mode',
             final_health: 0,
-            final_wealth: typeof p.wealth === 'number' ? p.wealth : parseFloat(String(p.wealth)),
+            final_money:  typeof p.money === 'number' ? Math.round(p.money) : parseInt(String(p.money), 10),
             world_id:     world.id,
           })),
         });

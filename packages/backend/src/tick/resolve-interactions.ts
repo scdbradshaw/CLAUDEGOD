@@ -14,7 +14,7 @@ import type {
   TraitSet,
   Tone,
 } from '@civ-sim/shared';
-import { TRAUMA_SCORE_PENALTY } from '@civ-sim/shared';
+import { TRAUMA_SCORE_PENALTY, K_INTERACTION_PAIRS } from '@civ-sim/shared';
 import { toneForOutcomeBand } from '../services/tone.service';
 import {
   viralJoinsForPair,
@@ -58,7 +58,7 @@ export interface LivingPersonLite {
   id:           string;
   name:         string;
   age:          number;
-  health:       number;
+  current_health: number;
   trauma_score: number;
   traits:       unknown;
 }
@@ -143,9 +143,12 @@ export async function resolveInteractionsPhase(
   const pendingSpawnsByFounder:   Map<string, SpawnIntent>   = new Map();
   const pendingPregnanciesByPair: Map<string, { parent_a_id: string; parent_b_id: string }> = new Map();
 
-  const shuffled = [...living].sort(() => Math.random() - 0.5);
+  // Sample K_INTERACTION_PAIRS pairs rather than iterating all N protagonists.
+  // Cost is O(K) regardless of population size.
+  const K = Math.min(K_INTERACTION_PAIRS, living.length > 1 ? living.length * (living.length - 1) : 0);
 
-  for (const protagonist of shuffled) {
+  for (let _i = 0; _i < K; _i++) {
+    const protagonist = living[Math.floor(Math.random() * living.length)];
     const antagonist = pickAntagonizer(protagonist, living, byId, linksOf);
     if (!antagonist) continue;
 
@@ -229,6 +232,6 @@ export async function resolveInteractionsPhase(
     pendingJoinsByKey,
     pendingSpawnsByFounder,
     pendingPregnanciesByPair,
-    interactionsProcessed: shuffled.length,
+    interactionsProcessed: K,
   };
 }

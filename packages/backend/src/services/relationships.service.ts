@@ -147,8 +147,8 @@ export async function listForPerson(personId: string, limit = 24): Promise<Relat
   }>>`
     SELECT l."id", l."owner_id", l."target_id", l."relation_type",
            l."bond_strength", l."updated_at",
-           p."name"   AS "target_name",
-           p."health" AS "target_health"
+           p."name"           AS "target_name",
+           p."current_health" AS "target_health"
     FROM   "inner_circle_links" l
     JOIN   "persons"             p ON p."id" = l."target_id"
     WHERE  l."owner_id" = ${personId}::uuid

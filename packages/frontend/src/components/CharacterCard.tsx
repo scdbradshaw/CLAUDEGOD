@@ -31,9 +31,9 @@ function healthBorder(health: number): string {
 function deriveVitals(traits: Record<string, number>) {
   const avg = (...vals: number[]) => Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
   return {
-    morality:  avg(traits.honesty ?? 50, traits.courage ?? 50, traits.discipline ?? 50),
-    influence: avg(traits.charisma ?? 50, traits.leadership ?? 50),
-    happiness: avg(traits.humor ?? 50, traits.empathy ?? 50),
+    morality:  avg(traits.willpower ?? 50, traits.courage ?? 50, traits.discipline ?? 50),
+    influence: avg(traits.charisma ?? 50, traits.ambition ?? 50),
+    happiness: avg(traits.loyalty ?? 50, traits.empathy ?? 50),
   };
 }
 
@@ -41,12 +41,12 @@ export default function CharacterCard({ person, onEdit }: Props) {
   const navigate = useNavigate();
   const traits   = (person.traits ?? {}) as Record<string, number>;
   const { morality, influence, happiness } = deriveVitals(traits);
-  const wealthPct = Math.min((person.wealth / 50_000) * 100, 100);
+  const wealthPct = Math.min((person.money / 50_000) * 100, 100);
 
   return (
     <div
       onClick={() => navigate(`/characters/${person.id}`)}
-      className={`panel block p-4 border-l-2 ${healthBorder(person.health)}
+      className={`panel block p-4 border-l-2 ${healthBorder(person.current_health)}
                   hover:border-border-warm transition-all duration-150 group space-y-3 cursor-pointer`}
     >
       {/* ── Header ── */}
@@ -79,14 +79,14 @@ export default function CharacterCard({ person, onEdit }: Props) {
 
       {/* ── 5 key stats ── */}
       <div className="space-y-1.5 pt-1 border-t border-border/40">
-        <StatBar label="Health"    value={person.health} />
+        <StatBar label="Health"    value={person.current_health} />
         <StatBar label="Morality"  value={morality}      />
         <StatBar label="Influence" value={influence}     />
         <StatBar label="Happiness" value={happiness}     />
 
         {/* Wealth uses a custom bar since it's not 0-100 */}
         <div className="grid grid-cols-[5rem_1fr_auto] items-center gap-2">
-          <span className="text-[10px] text-muted uppercase tracking-widest truncate">Wealth</span>
+          <span className="text-[10px] text-muted uppercase tracking-widest truncate">Money</span>
           <div className="stat-bar-track">
             <div
               className="h-full rounded-full transition-all duration-500 bg-amber-500"
@@ -94,7 +94,7 @@ export default function CharacterCard({ person, onEdit }: Props) {
             />
           </div>
           <span className={`text-[11px] font-medium w-14 text-right tabular-nums ${statTextColor(wealthPct)}`}>
-            {wealthStr(person.wealth)}
+            {wealthStr(person.money)}
           </span>
         </div>
       </div>

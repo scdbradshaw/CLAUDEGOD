@@ -27,11 +27,11 @@ function avg(...vals: number[]) {
 // ── Quick Edit Modal ──────────────────────────────────────────
 
 interface EditDraft {
-  health:    number;
-  morality:  number;
-  influence: number;
-  happiness: number;
-  wealth:    number;
+  current_health: number;
+  morality:       number;
+  influence:      number;
+  happiness:      number;
+  money:          number;
 }
 
 function CharacterEditModal({ personId, onClose }: { personId: string; onClose: () => void }) {
@@ -49,11 +49,11 @@ function CharacterEditModal({ personId, onClose }: { personId: string; onClose: 
     if (person && !drafts) {
       const t = (person.traits ?? {}) as Record<string, number>;
       setDrafts({
-        health:    person.health,
-        morality:  avg(t.honesty ?? 50, t.courage ?? 50, t.discipline ?? 50),
-        influence: avg(t.charisma ?? 50, t.leadership ?? 50),
-        happiness: avg(t.humor ?? 50, t.empathy ?? 50),
-        wealth:    Math.round(person.wealth),
+        current_health: person.current_health,
+        morality:       avg(t.willpower ?? 50, t.courage ?? 50, t.discipline ?? 50),
+        influence:      avg(t.charisma ?? 50, t.ambition ?? 50),
+        happiness:      avg(t.empathy ?? 50, t.loyalty ?? 50),
+        money:          Math.round(person.money),
       });
     }
   }, [person]);
@@ -62,15 +62,15 @@ function CharacterEditModal({ personId, onClose }: { personId: string; onClose: 
     mutationFn: () => {
       if (!drafts) throw new Error('No data');
       return (api.godMode.apply as Function)(personId, {
-        delta:            { health: drafts.health, wealth: drafts.wealth },
+        delta:            { current_health: drafts.current_health, money: drafts.money },
         trait_overrides:  {
-          honesty:    drafts.morality,
+          willpower:  drafts.morality,
           courage:    drafts.morality,
           discipline: drafts.morality,
-          charisma:    drafts.influence,
-          leadership:  drafts.influence,
-          humor:      drafts.happiness,
+          charisma:   drafts.influence,
+          ambition:   drafts.influence,
           empathy:    drafts.happiness,
+          loyalty:    drafts.happiness,
         },
         event_summary:    'God Mode: manual stat adjustment',
         emotional_impact: 'neutral' as EmotionalImpact,
@@ -83,14 +83,14 @@ function CharacterEditModal({ personId, onClose }: { personId: string; onClose: 
     },
   });
 
-  const wealthMax = person ? Math.max(Math.round(person.wealth * 3), 200_000) : 200_000;
+  const moneyMax = person ? Math.max(Math.round(person.money * 3), 200_000) : 200_000;
 
   const SLIDERS = [
-    { key: 'health',    label: 'Health',    min: 0, max: 100,      step: 1   },
-    { key: 'morality',  label: 'Morality',  min: 0, max: 100,      step: 1   },
-    { key: 'influence', label: 'Influence', min: 0, max: 100,      step: 1   },
-    { key: 'happiness', label: 'Happiness', min: 0, max: 100,      step: 1   },
-    { key: 'wealth',    label: 'Wealth',    min: 0, max: wealthMax, step: 500 },
+    { key: 'current_health', label: 'Health',    min: 0, max: 100,      step: 1   },
+    { key: 'morality',       label: 'Morality',  min: 0, max: 100,      step: 1   },
+    { key: 'influence',      label: 'Influence', min: 0, max: 100,      step: 1   },
+    { key: 'happiness',      label: 'Happiness', min: 0, max: 100,      step: 1   },
+    { key: 'money',          label: 'Money',     min: 0, max: moneyMax,  step: 500 },
   ] as const;
 
   return (
@@ -130,7 +130,7 @@ function CharacterEditModal({ personId, onClose }: { personId: string; onClose: 
             <div className="space-y-4">
               {SLIDERS.map(({ key, label, min, max, step }) => {
                 const val = drafts[key];
-                const isWealth = key === 'wealth';
+                const isWealth = key === 'money';
                 const displayColor = isWealth
                   ? 'text-amber-400'
                   : statTextColor(val as number);

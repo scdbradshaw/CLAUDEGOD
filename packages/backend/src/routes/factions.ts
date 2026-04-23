@@ -109,20 +109,20 @@ router.post('/', validate(CreateFactionSchema), async (req: Request, res: Respon
 
   const founder = await prisma.person.findUnique({
     where: { id: body.founder_id },
-    select: { id: true, health: true },
+    select: { id: true, current_health: true },
   });
   if (!founder)            { res.status(404).json({ error: 'Founder not found' }); return; }
-  if (founder.health <= 0) { res.status(400).json({ error: 'Founder is deceased' }); return; }
+  if (founder.current_health <= 0) { res.status(400).json({ error: 'Founder is deceased' }); return; }
 
   // If leader_id provided, verify alive; else fall back to founder
   const leaderId = body.leader_id ?? body.founder_id;
   if (leaderId !== body.founder_id) {
     const leader = await prisma.person.findUnique({
       where: { id: leaderId },
-      select: { id: true, health: true },
+      select: { id: true, current_health: true },
     });
     if (!leader)            { res.status(404).json({ error: 'Leader not found' }); return; }
-    if (leader.health <= 0) { res.status(400).json({ error: 'Leader is deceased' }); return; }
+    if (leader.current_health <= 0) { res.status(400).json({ error: 'Leader is deceased' }); return; }
   }
 
   const faction = await prisma.faction.create({
@@ -186,10 +186,10 @@ router.post('/:id/members',
     const world  = await getActiveWorld();
     const person = await prisma.person.findUnique({
       where: { id: req.body.person_id },
-      select: { id: true, health: true },
+      select: { id: true, current_health: true },
     });
     if (!person)            { res.status(404).json({ error: 'Person not found' }); return; }
-    if (person.health <= 0) { res.status(400).json({ error: 'Person is deceased' }); return; }
+    if (person.current_health <= 0) { res.status(400).json({ error: 'Person is deceased' }); return; }
 
     const membership = await prisma.factionMembership.upsert({
       where:  { faction_id_person_id: { faction_id: req.params.id, person_id: req.body.person_id } },

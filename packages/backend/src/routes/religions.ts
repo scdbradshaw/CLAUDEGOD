@@ -107,10 +107,10 @@ router.post('/', validate(CreateReligionSchema), async (req: Request, res: Respo
   // Verify founder exists and is alive
   const founder = await prisma.person.findUnique({
     where: { id: body.founder_id },
-    select: { id: true, health: true },
+    select: { id: true, current_health: true },
   });
   if (!founder)            { res.status(404).json({ error: 'Founder not found' }); return; }
-  if (founder.health <= 0) { res.status(400).json({ error: 'Founder is deceased' }); return; }
+  if (founder.current_health <= 0) { res.status(400).json({ error: 'Founder is deceased' }); return; }
 
   const religion = await prisma.religion.create({
     data: {
@@ -167,10 +167,10 @@ router.post('/:id/members',
     const world  = await getActiveWorld();
     const person = await prisma.person.findUnique({
       where: { id: req.body.person_id },
-      select: { id: true, health: true },
+      select: { id: true, current_health: true },
     });
     if (!person)            { res.status(404).json({ error: 'Person not found' }); return; }
-    if (person.health <= 0) { res.status(400).json({ error: 'Person is deceased' }); return; }
+    if (person.current_health <= 0) { res.status(400).json({ error: 'Person is deceased' }); return; }
 
     const membership = await prisma.religionMembership.upsert({
       where:  { religion_id_person_id: { religion_id: req.params.id, person_id: req.body.person_id } },

@@ -82,14 +82,14 @@ export async function applyOccupationIncome(
   // occupation strings simply don't earn income.
   await prisma.$executeRaw`
     UPDATE persons p SET
-      wealth     = GREATEST(0, p.wealth + ROUND(
+      money      = GREATEST(0, p.money + ROUND(
                      (b.base + (random() * 2 - 1) * b.variance)::numeric * ${mult}::numeric
                    )::int),
       updated_at = NOW()
     FROM jsonb_to_recordset(${JSON.stringify(payload)}::jsonb)
       AS b(occ text, base int, variance int)
     WHERE p.world_id = ${worldId}::uuid
-      AND p.health   > 0
+      AND p.current_health > 0
       AND p.occupation = b.occ
   `;
 }
@@ -144,7 +144,7 @@ export async function distributeInheritance(
     FROM   "inner_circle_links" l
     JOIN   "persons"             p ON p.id = l.target_id
     WHERE  l.owner_id = ${deceasedId}::uuid
-      AND  p.health   > 0
+      AND  p.current_health > 0
       AND  l.relation_type::text = ANY(${INHERITABLE_RELATIONS as readonly string[]}::text[])
     ORDER BY l.bond_strength DESC
     LIMIT 3
@@ -167,7 +167,7 @@ export async function distributeInheritance(
   const rowsPayload = heirs.map(h => ({ id: h.heir_id, share: h.share }));
   await tx.$executeRaw`
     UPDATE persons p SET
-      wealth     = p.wealth + (u.share)::int,
+      money      = p.money + (u.share)::int,
       updated_at = NOW()
     FROM jsonb_to_recordset(${JSON.stringify(rowsPayload)}::jsonb)
       AS u(id uuid, share int)

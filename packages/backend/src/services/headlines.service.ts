@@ -44,11 +44,11 @@ async function buildWorldContext(year: number, worldId: string) {
 
   const w = { world_id: worldId };
 
-  const [lowestHealth, highestWealth, lowestWealth, oldest] =
+  const [lowestHealth, highestMoney, lowestMoney, oldest] =
     await Promise.all([
-      prisma.person.findFirst({ where: { ...w, health: { gt: 0 } }, orderBy: { health: 'asc' }, take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { wealth: 'desc' }, take: 1 }),
-      prisma.person.findFirst({ where: w, orderBy: { wealth: 'asc' },  take: 1 }),
+      prisma.person.findFirst({ where: { ...w, current_health: { gt: 0 } }, orderBy: { current_health: 'asc' }, take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { money: 'desc' }, take: 1 }),
+      prisma.person.findFirst({ where: w, orderBy: { money: 'asc' },  take: 1 }),
       prisma.person.findFirst({ where: w, orderBy: { age: 'desc' },    take: 1 }),
     ]);
 
@@ -62,7 +62,7 @@ async function buildWorldContext(year: number, worldId: string) {
     take: 5,
   });
 
-  return { active, lowestHealth, highestWealth, lowestWealth, oldest, deaths };
+  return { active, lowestHealth, highestMoney, lowestMoney, oldest, deaths };
 }
 
 // ── Claude call ────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ async function callClaude(year: number, context: Awaited<ReturnType<typeof build
     year,
     active_characters: context.active.map(p => ({
       id: p.id, name: p.name, race: p.race, age: p.age,
-      health: p.health, wealth: p.wealth,
+      current_health: p.current_health, money: p.money,
       relationship_status: p.relationship_status, criminal_record: p.criminal_record,
       traits: p.traits,
       recent_memories: p.memory_bank.map(m => ({
@@ -117,9 +117,9 @@ async function callClaude(year: number, context: Awaited<ReturnType<typeof build
       })),
     })),
     notable: {
-      lowest_health:  context.lowestHealth  ? { id: context.lowestHealth.id,  name: context.lowestHealth.name,  health: context.lowestHealth.health }   : null,
-      highest_wealth: context.highestWealth ? { id: context.highestWealth.id, name: context.highestWealth.name, wealth: context.highestWealth.wealth }   : null,
-      lowest_wealth:  context.lowestWealth  ? { id: context.lowestWealth.id,  name: context.lowestWealth.name,  wealth: context.lowestWealth.wealth }    : null,
+      lowest_health:  context.lowestHealth  ? { id: context.lowestHealth.id,  name: context.lowestHealth.name,  current_health: context.lowestHealth.current_health }   : null,
+      highest_money:  context.highestMoney  ? { id: context.highestMoney.id,  name: context.highestMoney.name,  money: context.highestMoney.money }   : null,
+      lowest_money:   context.lowestMoney   ? { id: context.lowestMoney.id,   name: context.lowestMoney.name,   money: context.lowestMoney.money }    : null,
       oldest:         context.oldest        ? { id: context.oldest.id,        name: context.oldest.name,        age: context.oldest.age }                : null,
     },
     deaths_this_year: context.deaths.map(d => ({ name: d.person?.name, summary: d.event_summary })),
@@ -242,7 +242,7 @@ export async function generateHeadlinesForYear(year: number, worldId: string): P
 /**
  * Decade-boundary generation (Step 21).
  *
- * At the end of every `advanceTime`, walk every fully-elapsed decade and
+ * At the end of every year-pipeline run, walk every fully-elapsed decade and
  * generate its DECADE summary row if one doesn't already exist for each
  * category. Annual rows are preserved — no deletion, no compression.
  *

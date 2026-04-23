@@ -10,7 +10,7 @@ import { api } from '../api/client';
 
 const EMOTIONAL_OPTS = ['traumatic', 'negative', 'neutral', 'positive', 'euphoric'] as const;
 
-const STAT_KEYS = ['health', 'age', 'death_age', 'wealth'] as const;
+const STAT_KEYS = ['current_health', 'max_health', 'attack', 'defense', 'speed', 'age', 'death_age', 'money', 'moral_score'] as const;
 
 interface DeltaRow {
   id:    number;
@@ -22,7 +22,7 @@ let _seq = 0;
 const nextId = () => ++_seq;
 
 function defaultRow(): DeltaRow {
-  return { id: nextId(), key: 'health', value: '' };
+  return { id: nextId(), key: 'current_health', value: '' };
 }
 
 export default function ManualEventPanel() {
@@ -117,7 +117,7 @@ export default function ManualEventPanel() {
               <option value="">— select character —</option>
               {chars.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name} (age {c.age}, hp {c.health})
+                  {c.name} (age {c.age}, hp {c.current_health})
                 </option>
               ))}
             </select>

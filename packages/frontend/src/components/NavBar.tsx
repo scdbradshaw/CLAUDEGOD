@@ -7,19 +7,27 @@ import { NavLink, Link } from 'react-router-dom';
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { api } from '../api/client';
+import { usePipeline } from './PipelineProvider';
 import type { WorldListItem } from '@civ-sim/shared';
 
 const NAV_ITEMS = [
   { to: '/',          label: 'World View', glyph: '⊕' },
   { to: '/souls',     label: 'Souls',      glyph: '⚉' },
   { to: '/groups',    label: 'Groups',     glyph: '⬡' },
+  { to: '/events',    label: 'Events',     glyph: '⚡' },
   { to: '/chronicle', label: 'Chronicle',  glyph: '◉' },
   { to: '/exchange',  label: 'Exchange',   glyph: '◈' },
   { to: '/fallen',    label: 'The Fallen', glyph: '✝' },
 ];
 
+// Heartbeat bar height (h-7 + 0.5px sliver)
+const HEARTBEAT_OFFSET = 30;
+
 export default function NavBar() {
   const [designerOpen, setDesignerOpen] = useState(false);
+  const { running, status } = usePipeline();
+  const heartbeatVisible = running || status === 'completed' || status === 'failed';
+  const navTop = heartbeatVisible ? HEARTBEAT_OFFSET : 0;
 
   const { data: worlds } = useQuery({
     queryKey: ['worlds'],
@@ -30,7 +38,10 @@ export default function NavBar() {
 
   return (
     <>
-      <nav className="fixed top-0 left-0 right-0 z-50 h-11 flex items-stretch border-b border-border bg-panel/95 backdrop-blur-sm">
+      <nav
+        style={{ top: navTop }}
+        className="fixed left-0 right-0 z-50 h-11 flex items-stretch border-b border-border bg-panel/95 backdrop-blur-sm transition-[top] duration-200"
+      >
         {/* Brand */}
         <Link
           to="/"
@@ -117,8 +128,8 @@ export default function NavBar() {
         </div>
       </nav>
 
-      {/* Spacer so page content clears the fixed nav */}
-      <div className="h-11" />
+      {/* Spacer so page content clears the fixed nav (+ heartbeat if visible) */}
+      <div style={{ height: 44 + navTop }} />
     </>
   );
 }

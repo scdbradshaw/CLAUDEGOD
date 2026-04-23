@@ -38,11 +38,11 @@ export interface GroupSnapshot {
 }
 
 export interface PersonSnapshot {
-  id:            string;
-  traits:        Record<string, number>;
-  global_scores: Record<string, number>;
-  /** Life/death column — also present in traits.health. */
-  health:        number;
+  id:             string;
+  traits:         Record<string, number>;
+  global_scores:  Record<string, number>;
+  /** Life/death pool column. 0 = dead. */
+  current_health: number;
 }
 
 // ── Profile matching ────────────────────────────────────────
@@ -53,7 +53,7 @@ export interface PersonSnapshot {
  * Supported key shapes:
  *   - `<identity_attr>`            e.g. "charisma", "ambition"
  *   - `<force>.<child>`            e.g. "faith.devotion"
- *   - `health`                      the life/death column
+ *   - `current_health`               the life/death pool column
  * Returns undefined for unknown keys so the caller can skip silently.
  */
 function resolveProfileValue(
@@ -64,9 +64,9 @@ function resolveProfileValue(
   if (key.includes('.')) {
     return person.global_scores[key];
   }
-  // Health column (special-cased since it's not namespaced)
-  if (key === 'health') return person.health;
-  // Identity attribute (all 25 attrs including health duplicate)
+  // current_health column (special-cased since it's not a trait key)
+  if (key === 'current_health') return person.current_health;
+  // Meta trait (body/mind/heart/drive attributes, 0-100)
   return person.traits[key];
 }
 
@@ -262,56 +262,88 @@ export interface DropoffResult {
  * delete rows that fall below MIN_ALIGNMENT_RETAIN, and refresh the
  * stored alignment value on survivors.
  *
- * Operates via the passed transaction client so it composes with the
- * rest of the tick.
+ * Uses bulk deleteMany + raw-SQL UPDATE to avoid N round-trips and
+ * transaction timeouts on large populations.
  */
 export async function runMembershipDropoff(
-  tx:      Prisma.TransactionClient,
+  prisma:  PrismaClient,
   persons: Map<string, PersonSnapshot>,
   groups:  { byId: Map<string, GroupSnapshot> },
 ): Promise<DropoffResult> {
-  let religion_drops = 0;
-  let faction_drops  = 0;
-
   // ── Religions ─────────────────────────────────────
-  const rms = await tx.religionMembership.findMany({
+  const rms = await prisma.religionMembership.findMany({
     select: { id: true, religion_id: true, person_id: true, alignment: true },
   });
+
+  const rDropIds:   string[] = [];
+  const rUpdateIds: string[] = [];
+  const rUpdateVals: number[] = [];
+
   for (const m of rms) {
     const person = persons.get(m.person_id);
     const group  = groups.byId.get(m.religion_id);
-    if (!person || !group) continue; // stale — snapshot loaders already filtered dissolved groups
+    if (!person || !group) continue;
     const a = computeAlignment(person, group.virus_profile, group.tolerance);
     if (a < MIN_ALIGNMENT_RETAIN) {
-      await tx.religionMembership.delete({ where: { id: m.id } });
-      religion_drops++;
+      rDropIds.push(m.id);
     } else if (Math.abs(a - m.alignment) > 0.01) {
-      await tx.religionMembership.update({
-        where: { id: m.id },
-        data:  { alignment: a },
-      });
+      rUpdateIds.push(m.id);
+      rUpdateVals.push(a);
     }
   }
 
+  const [rDelResult] = await Promise.all([
+    rDropIds.length > 0
+      ? prisma.religionMembership.deleteMany({ where: { id: { in: rDropIds } } })
+      : Promise.resolve({ count: 0 }),
+    rUpdateIds.length > 0
+      ? prisma.$executeRawUnsafe(`
+          UPDATE religion_memberships AS rm
+          SET alignment = v.a
+          FROM (SELECT UNNEST($1::uuid[]) AS id, UNNEST($2::float8[]) AS a) AS v
+          WHERE rm.id = v.id
+        `, rUpdateIds, rUpdateVals)
+      : Promise.resolve(0),
+  ]);
+
   // ── Factions ──────────────────────────────────────
-  const fms = await tx.factionMembership.findMany({
+  const fms = await prisma.factionMembership.findMany({
     select: { id: true, faction_id: true, person_id: true, alignment: true },
   });
+
+  const fDropIds:    string[] = [];
+  const fUpdateIds:  string[] = [];
+  const fUpdateVals: number[] = [];
+
   for (const m of fms) {
     const person = persons.get(m.person_id);
     const group  = groups.byId.get(m.faction_id);
     if (!person || !group) continue;
     const a = computeAlignment(person, group.virus_profile, group.tolerance);
     if (a < MIN_ALIGNMENT_RETAIN) {
-      await tx.factionMembership.delete({ where: { id: m.id } });
-      faction_drops++;
+      fDropIds.push(m.id);
     } else if (Math.abs(a - m.alignment) > 0.01) {
-      await tx.factionMembership.update({
-        where: { id: m.id },
-        data:  { alignment: a },
-      });
+      fUpdateIds.push(m.id);
+      fUpdateVals.push(a);
     }
   }
 
-  return { religion_drops, faction_drops };
+  const [fDelResult] = await Promise.all([
+    fDropIds.length > 0
+      ? prisma.factionMembership.deleteMany({ where: { id: { in: fDropIds } } })
+      : Promise.resolve({ count: 0 }),
+    fUpdateIds.length > 0
+      ? prisma.$executeRawUnsafe(`
+          UPDATE faction_memberships AS fm
+          SET alignment = v.a
+          FROM (SELECT UNNEST($1::uuid[]) AS id, UNNEST($2::float8[]) AS a) AS v
+          WHERE fm.id = v.id
+        `, fUpdateIds, fUpdateVals)
+      : Promise.resolve(0),
+  ]);
+
+  return {
+    religion_drops: rDelResult.count,
+    faction_drops:  fDelResult.count,
+  };
 }

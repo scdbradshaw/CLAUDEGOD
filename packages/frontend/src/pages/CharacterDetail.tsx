@@ -6,12 +6,11 @@
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { api, type RelationshipKind, type RelationshipRow } from '../api/client';
+import { api, type RelationshipKind, type RelationshipRow, type StealResult, type GiftResult } from '../api/client';
 import StatBar, { statTextColor } from '../components/StatBar';
 import MemoryBankPanel from '../components/MemoryBankPanel';
 import type { CriminalRecord, EmotionalImpact, PersonDelta } from '@civ-sim/shared';
-import { GLOBAL_TRAITS, IDENTITY_ATTRIBUTES } from '@civ-sim/shared';
-import { FORCE_CONFIG } from '../constants/forces';
+import { IDENTITY_ATTRIBUTES } from '@civ-sim/shared';
 
 // ── Relation metadata ─────────────────────────────────────────
 
@@ -29,21 +28,13 @@ const RELATION_META: Record<RelationshipKind, { label: string; tag: string; node
 // ── Trait categories ──────────────────────────────────────────
 
 const TRAIT_CATEGORIES: { label: string; color: string; keys: readonly string[] }[] = [
-  { label: 'Physical',  color: 'text-red-400',     keys: IDENTITY_ATTRIBUTES.physical  },
-  { label: 'Mental',    color: 'text-sky-400',      keys: IDENTITY_ATTRIBUTES.mental    },
-  { label: 'Social',    color: 'text-emerald-400',  keys: IDENTITY_ATTRIBUTES.social    },
-  { label: 'Character', color: 'text-amber-400',    keys: IDENTITY_ATTRIBUTES.character },
-  { label: 'Skills',    color: 'text-violet-400',   keys: IDENTITY_ATTRIBUTES.skills    },
+  { label: 'Body',  color: 'text-red-400',     keys: IDENTITY_ATTRIBUTES.body  },
+  { label: 'Mind',  color: 'text-sky-400',      keys: IDENTITY_ATTRIBUTES.mind  },
+  { label: 'Heart', color: 'text-emerald-400',  keys: IDENTITY_ATTRIBUTES.heart },
+  { label: 'Drive', color: 'text-amber-400',    keys: IDENTITY_ATTRIBUTES.drive },
 ];
 
 // ── Helpers ───────────────────────────────────────────────────
-
-function normalizeChild(force: string, child: string, value: number): number {
-  const def = (GLOBAL_TRAITS as Record<string, { children: Record<string, { min: number; max: number }> }>)
-    [force]?.children[child];
-  if (!def || def.max === def.min) return 50;
-  return Math.round(((value - def.min) / (def.max - def.min)) * 100);
-}
 
 function wealthStr(w: number): string {
   if (w >= 1_000_000) return `$${(w / 1_000_000).toFixed(2)}M`;
@@ -179,26 +170,25 @@ function RelationshipGraph({ relationships, subjectName }: {
 const STAT_GROUPS = [
   {
     label: 'Vital Stats',
-    stats: ['health', 'age', 'death_age', 'wealth'],
+    stats: ['current_health', 'max_health', 'age', 'death_age', 'money'],
   },
   {
-    label: 'Social Stats',
-    stats: ['morality', 'happiness', 'reputation', 'influence', 'intelligence'],
+    label: 'Combat Stats',
+    stats: ['attack', 'defense', 'speed'],
   },
 ];
 
 // Flatten identity attribute keys for the dropdown
 const ALL_TRAIT_KEYS = [
-  ...IDENTITY_ATTRIBUTES.physical,
-  ...IDENTITY_ATTRIBUTES.mental,
-  ...IDENTITY_ATTRIBUTES.social,
-  ...IDENTITY_ATTRIBUTES.character,
-  ...IDENTITY_ATTRIBUTES.skills,
+  ...IDENTITY_ATTRIBUTES.body,
+  ...IDENTITY_ATTRIBUTES.mind,
+  ...IDENTITY_ATTRIBUTES.heart,
+  ...IDENTITY_ATTRIBUTES.drive,
 ];
 
 function EditStatsPanel({ personId }: { personId: string }) {
   const qc = useQueryClient();
-  const [stat,    setStat]    = useState('health');
+  const [stat,    setStat]    = useState('current_health');
   const [value,   setValue]   = useState('');
   const [summary, setSummary] = useState('');
   const [impact,  setImpact]  = useState<EmotionalImpact>('neutral');
@@ -384,7 +374,7 @@ function WriteEventTab({ personId }: { personId: string }) {
   const qc = useQueryClient();
   const [summary, setSummary] = useState('');
   const [impact,  setImpact]  = useState<EmotionalImpact>('neutral');
-  const [stat,    setStat]    = useState('health');
+  const [stat,    setStat]    = useState('current_health');
   const [delta,   setDelta]   = useState('');
   const [errMsg,  setErrMsg]  = useState('');
   const [okMsg,   setOkMsg]   = useState('');
@@ -428,7 +418,7 @@ function WriteEventTab({ personId }: { personId: string }) {
         <div className="space-y-1">
           <label className="label block">Stat affected (optional)</label>
           <select value={stat} onChange={e => setStat(e.target.value)} className="input-base">
-            {['health','morality','happiness','reputation','influence','intelligence','wealth','age'].map(s => (
+            {['current_health','max_health','attack','defense','speed','money','age'].map(s => (
               <option key={s} value={s}>{s}</option>
             ))}
           </select>
@@ -550,9 +540,138 @@ function CriminalRecordTab({ personId }: { personId: string }) {
   );
 }
 
+// ── God Mode — Steal tab ──────────────────────────────────────
+
+function StealTab({ thiefId }: { thiefId: string }) {
+  const qc = useQueryClient();
+  const [victimId, setVictimId] = useState('');
+  const [result,   setResult]   = useState<StealResult | null>(null);
+  const [errMsg,   setErrMsg]   = useState<string | null>(null);
+
+  const { data: charData } = useQuery({
+    queryKey: ['characters', 1, 100],
+    queryFn:  () => api.characters.list(1, 100),
+  });
+  const targets = charData?.data.filter(c => c.id !== thiefId) ?? [];
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!victimId) throw new Error('Select a target');
+      return api.interactions.steal({ thief_id: thiefId, victim_id: victimId });
+    },
+    onSuccess: (data) => {
+      setResult(data);
+      setErrMsg(null);
+      qc.invalidateQueries({ queryKey: ['character', thiefId] });
+      qc.invalidateQueries({ queryKey: ['character', victimId] });
+    },
+    onError: (e: Error) => { setErrMsg(e.message); setResult(null); },
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <label className="label block">Target</label>
+        <select value={victimId} onChange={e => setVictimId(e.target.value)} className="input-base">
+          <option value="">— select victim —</option>
+          {targets.map(c => <option key={c.id} value={c.id}>{c.name} (age {c.age})</option>)}
+        </select>
+      </div>
+      <button
+        onClick={() => { setResult(null); mutation.mutate(); }}
+        disabled={mutation.isPending}
+        className="w-full btn bg-red-900/40 border border-red-700/60 hover:bg-red-800/60 text-red-300 disabled:opacity-40"
+      >
+        {mutation.isPending ? 'Stealing…' : '🗡 Steal'}
+      </button>
+      {errMsg && <p className="text-red-400 text-[10px]">{errMsg}</p>}
+      {result && (
+        <div className="text-[11px] space-y-0.5">
+          <p className="text-emerald-400">Stole <span className="font-bold">{result.stolen}</span> coins from {result.victim_name}.</p>
+          {result.new_bond !== null && (
+            <p className="text-muted">Their bond toward you: <span className="text-gray-300">{result.new_bond}/100</span></p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── God Mode — Gift tab ───────────────────────────────────────
+
+function GiftTab({ donorId }: { donorId: string }) {
+  const qc = useQueryClient();
+  const [recipientId, setRecipientId] = useState('');
+  const [amount,      setAmount]      = useState('');
+  const [result,      setResult]      = useState<GiftResult | null>(null);
+  const [errMsg,      setErrMsg]      = useState<string | null>(null);
+
+  const { data: charData } = useQuery({
+    queryKey: ['characters', 1, 100],
+    queryFn:  () => api.characters.list(1, 100),
+  });
+  const targets = charData?.data.filter(c => c.id !== donorId) ?? [];
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!recipientId) throw new Error('Select a recipient');
+      const amt = parseInt(amount, 10);
+      if (isNaN(amt) || amt <= 0) throw new Error('Enter a positive amount');
+      return api.interactions.gift({ donor_id: donorId, recipient_id: recipientId, amount: amt });
+    },
+    onSuccess: (data) => {
+      setResult(data);
+      setErrMsg(null);
+      setAmount('');
+      qc.invalidateQueries({ queryKey: ['character', donorId] });
+      qc.invalidateQueries({ queryKey: ['character', recipientId] });
+    },
+    onError: (e: Error) => { setErrMsg(e.message); setResult(null); },
+  });
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <label className="label block">Recipient</label>
+        <select value={recipientId} onChange={e => setRecipientId(e.target.value)} className="input-base">
+          <option value="">— select recipient —</option>
+          {targets.map(c => <option key={c.id} value={c.id}>{c.name} (age {c.age})</option>)}
+        </select>
+      </div>
+      <div className="space-y-1">
+        <label className="label block">Amount (coins)</label>
+        <input
+          type="number"
+          min={1}
+          value={amount}
+          onChange={e => setAmount(e.target.value)}
+          className="input-base"
+          placeholder="e.g. 500"
+        />
+      </div>
+      <button
+        onClick={() => { setResult(null); mutation.mutate(); }}
+        disabled={mutation.isPending}
+        className="w-full btn bg-emerald-900/40 border border-emerald-700/60 hover:bg-emerald-800/60 text-emerald-300 disabled:opacity-40"
+      >
+        {mutation.isPending ? 'Gifting…' : '♥ Gift'}
+      </button>
+      {errMsg && <p className="text-red-400 text-[10px]">{errMsg}</p>}
+      {result && (
+        <div className="text-[11px] space-y-0.5">
+          <p className="text-emerald-400">Gifted <span className="font-bold">{result.amount}</span> coins to {result.recipient_name}.</p>
+          {result.new_bond !== null && (
+            <p className="text-muted">Their bond toward you: <span className="text-gray-300">{result.new_bond}/100</span></p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────
 
-type GodTab = 'stats' | 'interaction' | 'event' | 'record';
+type GodTab = 'stats' | 'interaction' | 'event' | 'record' | 'steal' | 'gift';
 
 export default function CharacterDetail() {
   const { id } = useParams<{ id: string }>();
@@ -587,15 +706,14 @@ export default function CharacterDetail() {
     );
   }
 
-  const traits       = (person.traits ?? {}) as Record<string, number>;
-  const globalScores = (person.global_scores ?? {}) as Record<string, number>;
+  const traits = (person.traits ?? {}) as Record<string, number>;
 
   // Derived vitals from identity traits
   const avg = (...vals: number[]) => Math.round(vals.reduce((a, b) => a + b, 0) / vals.length);
-  const vitalMorality    = avg(traits.honesty ?? 50, traits.courage ?? 50, traits.discipline ?? 50);
-  const vitalInfluence   = avg(traits.charisma ?? 50, traits.leadership ?? 50);
-  const vitalHappiness   = avg(traits.humor ?? 50, traits.empathy ?? 50);
-  const vitalReputation  = avg(traits.persuasion ?? 50, traits.charisma ?? 50);
+  const vitalMorality    = avg(traits.willpower ?? 50, traits.courage ?? 50, traits.discipline ?? 50);
+  const vitalInfluence   = avg(traits.charisma ?? 50, traits.ambition ?? 50);
+  const vitalHappiness   = avg(traits.loyalty ?? 50, traits.empathy ?? 50);
+  const vitalReputation  = avg(traits.charisma ?? 50, traits.empathy ?? 50);
   const vitalIntelligence = traits.intelligence ?? 0;
 
   return (
@@ -626,7 +744,7 @@ export default function CharacterDetail() {
       {/* ── 5-stat quick strip ── */}
       <div className="grid grid-cols-5 gap-2">
         {[
-          { label: 'Health',    value: person.health      },
+          { label: 'Health',    value: person.current_health },
           { label: 'Morality',  value: vitalMorality      },
           { label: 'Influence', value: vitalInfluence     },
           { label: 'Happiness', value: vitalHappiness     },
@@ -654,7 +772,8 @@ export default function CharacterDetail() {
                 ['Religion',     person.religion],
                 ['Relationship', person.relationship_status],
                 ['Age',          `${person.age} / ${person.death_age} yrs`],
-                ['Wealth',       wealthStr(person.wealth)],
+                ['Money',        wealthStr(person.money)],
+                ['Job',          person.occupation ?? 'Unemployed'],
                 ['Trauma',       Math.round(person.trauma_score)],
               ] as [string, string | number][]).map(([k, v]) => (
                 <div key={k}>
@@ -674,7 +793,7 @@ export default function CharacterDetail() {
           {/* Vital stat bars */}
           <div className="panel p-4 space-y-3">
             <h2 className="label text-gold/70">Vital</h2>
-            <StatBar label="Health"       value={person.health}       />
+            <StatBar label="Health"       value={person.current_health} />
             <StatBar label="Morality"     value={vitalMorality}       />
             <StatBar label="Happiness"    value={vitalHappiness}      />
             <StatBar label="Reputation"   value={vitalReputation}     />
@@ -704,6 +823,16 @@ export default function CharacterDetail() {
             />
           </div>
 
+          {/* Combat stat bars */}
+          <div className="panel p-4 space-y-3">
+            <h2 className="label text-gold/70">Combat</h2>
+            <StatBar label="Max Health"     value={person.max_health}     />
+            <StatBar label="Current Health" value={person.current_health} />
+            <StatBar label="Attack"         value={person.attack}         />
+            <StatBar label="Defense"        value={person.defense}        />
+            <StatBar label="Speed"          value={person.speed}          />
+          </div>
+
           {/* Identity attributes — 5 categories */}
           <div className="panel p-4 space-y-4">
             <h2 className="label text-gold/70">Identity Attributes</h2>
@@ -718,43 +847,6 @@ export default function CharacterDetail() {
               </div>
             ))}
           </div>
-
-          {/* World forces (only if data exists) */}
-          {Object.keys(globalScores).length > 0 && (
-            <div className="panel p-4 space-y-4">
-              <h2 className="label text-gold/70">World Force Resonance</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                {FORCE_CONFIG.map(({ key, label, textColor }) => {
-                  const forceDef = (GLOBAL_TRAITS as Record<string, { children: Record<string, { min: number; max: number }> }>)[key];
-                  const children = Object.entries(forceDef?.children ?? {});
-                  return (
-                    <div key={key}>
-                      <p className={`text-xs font-semibold mb-2 uppercase tracking-widest ${textColor}`}>{label}</p>
-                      <div className="space-y-1.5">
-                        {children.map(([child]) => {
-                          const val  = globalScores[`${key}.${child}`] ?? 0;
-                          const norm = normalizeChild(key, child, val);
-                          return (
-                            <div key={child} className="flex items-center gap-2">
-                              <span className="text-[10px] text-muted w-36 shrink-0 capitalize">
-                                {child.replace(/_/g, ' ')}
-                              </span>
-                              <div className="flex-1">
-                                <StatBar label="" value={norm} showValue={false} />
-                              </div>
-                              <span className="text-[10px] text-zinc-500 w-8 text-right tabular-nums">
-                                {val > 0 ? `+${val}` : val}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
 
           {/* Criminal record */}
           {person.criminal_record.length > 0 && (
@@ -847,10 +939,12 @@ export default function CharacterDetail() {
           {/* Tab bar */}
           <div className="flex border-b border-border">
             {([
-              { id: 'stats',       label: '⚡ Edit Stats'     },
-              { id: 'interaction', label: '⚔ Force Interaction' },
-              { id: 'event',       label: '✍ Write Event'     },
-              { id: 'record',      label: '⚖ Criminal Record' },
+              { id: 'stats',       label: '⚡ Stats'           },
+              { id: 'interaction', label: '⚔ Interact'         },
+              { id: 'event',       label: '✍ Event'            },
+              { id: 'record',      label: '⚖ Record'           },
+              { id: 'steal',       label: '🗡 Steal'           },
+              { id: 'gift',        label: '♥ Gift'             },
             ] as { id: GodTab; label: string }[]).map(t => (
               <button
                 key={t.id}
@@ -871,6 +965,8 @@ export default function CharacterDetail() {
             {godTab === 'interaction' && <ForceInteractionTab   subjectId={person.id} subjectName={person.name} />}
             {godTab === 'event'       && <WriteEventTab         personId={person.id} />}
             {godTab === 'record'      && <CriminalRecordTab     personId={person.id} />}
+            {godTab === 'steal'       && <StealTab              thiefId={person.id} />}
+            {godTab === 'gift'        && <GiftTab               donorId={person.id} />}
           </div>
         </div>
       </div>

@@ -355,13 +355,13 @@ export default function Economy() {
     if (serverHistory.length > 0) {
       historyRef.current = serverHistory;
       setChartPoints(serverHistory);
-    } else if (data.tick_count > 0) {
+    } else if (data.year_count > 0) {
       const existing = historyRef.current;
       const last = existing[existing.length - 1];
-      if (!last || last.tick !== data.tick_count) {
+      if (!last || last.tick !== data.year_count) {
         const next = [
           ...existing,
-          { tick: data.tick_count, stable: data.market_stable_index, standard: data.market_index, volatile: data.market_volatile_index },
+          { tick: data.year_count, stable: data.market_stable_index, standard: data.market_index, volatile: data.market_volatile_index },
         ].slice(-100);
         historyRef.current = next;
         setChartPoints(next);
@@ -430,7 +430,7 @@ export default function Economy() {
       <header>
         <h1 className="page-title">The Exchange</h1>
         <p className="page-subtitle">
-          Year {data.current_year} · Tick {data.tick_count} · {chartPoints.length} data points
+          Year {data.current_year} · {chartPoints.length} data points
         </p>
       </header>
 
@@ -449,22 +449,22 @@ export default function Economy() {
 
       {/* ── Market highlights ── */}
       <div className="space-y-2">
-        <span className="label text-gold/70">Last Tick Highlights</span>
+        <span className="label text-gold/70">Last Year Highlights</span>
         <HighlightsStrip highlights={highlights} />
       </div>
 
       {/* ── Income note ── */}
       <div className="panel p-3 text-[10px] text-muted border border-amber-900/30">
         <span className="text-amber-400/80 font-medium">Income model (placeholder):</span>{' '}
-        Each soul earns <span className="text-zinc-300">20,000 / tick</span> — 80% direct wages, 20% auto-invested in their assigned market.
+        Each soul earns <span className="text-zinc-300">20,000 / year</span> — 80% direct wages, 20% auto-invested in their assigned market.
         Assignment is trait-driven: high intelligence + high cunning → riskAwin; high intelligence → trusUS; everyone else → dreamBIG.
       </div>
 
       {/* ── Stats strip ── */}
       <div className="panel p-4 grid grid-cols-3 gap-4 text-center">
         {[
-          { label: 'Ticks Run',     value: data.tick_count,    color: 'text-zinc-200' },
-          { label: 'Years Elapsed', value: data.current_year,  color: 'text-gold'     },
+          { label: 'Years Elapsed', value: data.year_count,    color: 'text-zinc-200' },
+          { label: 'Current Year',  value: data.current_year,  color: 'text-gold'     },
           { label: 'Souls Lost',    value: data.total_deaths,  color: 'text-red-400'  },
         ].map(({ label, value, color }) => (
           <div key={label}>

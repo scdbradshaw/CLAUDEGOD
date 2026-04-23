@@ -53,9 +53,9 @@ export const CreatePersonSchema = z.object({
   relationship_status: z.string().min(1).max(100),
   religion:            z.string().min(1).max(100),
   criminal_record:     z.array(CriminalRecordSchema).default([]),
-  health:              statSchema.default(100),
+  current_health:      statSchema.default(100),
   physical_appearance: z.string().min(1),
-  wealth:              z.number().min(0).default(0),
+  money:               z.number().int().min(0).default(0),
 });
 
 export type CreatePersonInput = z.infer<typeof CreatePersonSchema>;
@@ -72,9 +72,9 @@ export const PersonDeltaSchema = z.object({
   death_age:           z.number().int().min(1).max(999).optional(),
   relationship_status: z.string().min(1).max(100).optional(),
   religion:            z.string().min(1).max(100).optional(),
-  health:              statSchema.optional(),
+  current_health:      statSchema.optional(),
   physical_appearance: z.string().min(1).optional(),
-  wealth:              z.number().optional(),
+  money:               z.number().int().optional(),
 });
 
 // --------------- Delta Request ---------------
@@ -110,7 +110,7 @@ export const BulkCreateSchema = z.object({
 
 // --------------- Bulk Filter Action ---------------
 
-const SCALAR_NUMERIC_FIELDS = ['age', 'health', 'wealth'] as const;
+const SCALAR_NUMERIC_FIELDS = ['age', 'current_health', 'money'] as const;
 
 const SCALAR_STRING_FIELDS = ['race', 'occupation', 'religion', 'gender'] as const;
 

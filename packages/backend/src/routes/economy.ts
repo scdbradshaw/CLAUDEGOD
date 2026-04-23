@@ -24,7 +24,7 @@ router.get('/', async (_req: Request, res: Response) => {
   const bucketCounts = await prisma.$queryRaw<Array<{ market_bucket: string; cnt: bigint }>>`
     SELECT market_bucket, COUNT(*) AS cnt
     FROM persons
-    WHERE world_id = ${world.id}::uuid AND health > 0
+    WHERE world_id = ${world.id}::uuid AND current_health > 0
     GROUP BY market_bucket
   `;
   const memberCounts: Record<string, number> = {};
@@ -53,7 +53,7 @@ router.get('/', async (_req: Request, res: Response) => {
       volatile: memberCounts['volatile'] ?? 0,
     },
     // World state
-    tick_count:               world.tick_count,
+    year_count:               world.year_count,
     total_deaths:             world.total_deaths,
     current_year:             world.current_year,
     global_trait_multipliers: multipliers,

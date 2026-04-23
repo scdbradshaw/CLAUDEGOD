@@ -16,10 +16,10 @@ import type { VirusProfile, OutcomeBand, CapabilityGates } from '@civ-sim/shared
 import type { GroupKind, PersonSnapshot } from './membership.service';
 
 // ── Tunables ────────────────────────────────────────────────
-/** Minimum leadership / charisma required for emergent spawn (fallback). */
+/** Minimum ambition / charisma required for emergent spawn (fallback). */
 export const CAPABILITY_GATE = {
-  leadership: 60,
-  charisma:   55,
+  ambition: 60,
+  charisma: 55,
 } as const;
 
 /** Probability per qualifying dramatic event that an emergent group spawns. */
@@ -45,11 +45,11 @@ export function meetsCapabilityGate(
   p:     PersonSnapshot,
   gates?: CapabilityGates['found_religion'] | CapabilityGates['found_faction'],
 ): boolean {
-  const leadershipMin = gates?.leadership_min ?? CAPABILITY_GATE.leadership;
-  const charismaMin   = gates?.charisma_min   ?? CAPABILITY_GATE.charisma;
-  const leadership = p.traits['leadership'] ?? 0;
-  const charisma   = p.traits['charisma']   ?? 0;
-  return leadership >= leadershipMin && charisma >= charismaMin;
+  const ambitionMin = gates?.ambition_min ?? CAPABILITY_GATE.ambition;
+  const charismaMin = gates?.charisma_min ?? CAPABILITY_GATE.charisma;
+  const ambition = p.traits['ambition'] ?? 0;
+  const charisma = p.traits['charisma'] ?? 0;
+  return ambition >= ambitionMin && charisma >= charismaMin;
 }
 
 // ── Virus profile derivation ────────────────────────────────

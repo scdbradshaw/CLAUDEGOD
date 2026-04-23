@@ -20,21 +20,28 @@ export const TONES: readonly Tone[] = ['tabloid', 'literary', 'epic', 'reportage
 
 // --------------- Identity Attribute system ---------------
 
-/** 25 identity attributes across 5 categories — the core of who a person IS */
+/**
+ * 4 meta trait categories (16 traits total, 0–100 each, neutral = 50).
+ * Each trait pushes a hard stat column on Person every tick.
+ *
+ * BODY  → combat stats (attack, defense, max_health, speed)
+ * MIND  → amplifier on all other category push magnitudes
+ * HEART → relationship / group interaction outcomes
+ * DRIVE → agentic action selection + economic behavior
+ */
 export const IDENTITY_ATTRIBUTES = {
-  physical:  ['beauty', 'health', 'strength', 'endurance', 'agility'],
-  mental:    ['intelligence', 'creativity', 'memory', 'curiosity', 'cunning'],
-  social:    ['charisma', 'empathy', 'humor', 'leadership', 'persuasion'],
-  character: ['ambition', 'discipline', 'honesty', 'courage', 'resilience'],
-  skills:    ['combat', 'craftsmanship', 'artistry', 'street_smarts', 'survival'],
+  body:  ['strength', 'endurance', 'agility', 'resilience'],
+  mind:  ['intelligence', 'willpower', 'intuition', 'creativity'],
+  heart: ['charisma', 'empathy', 'loyalty', 'jealousy'],
+  drive: ['ambition', 'courage', 'discipline', 'cunning'],
 } as const;
 
 export type IdentityCategoryKey = keyof typeof IDENTITY_ATTRIBUTES;
 
-/** Flat list of all 25 identity attribute keys */
+/** Flat list of all 16 trait keys */
 export const ALL_IDENTITY_KEYS = Object.values(IDENTITY_ATTRIBUTES).flat() as string[];
 
-/** Flat map of all 25 identity attribute keys → values (0-100) */
+/** Flat map of all trait keys → values (0-100) */
 export type TraitSet = Record<string, number>;
 
 // --------------- Global Trait system ---------------
@@ -273,11 +280,11 @@ export interface PassiveDriftRule {
  */
 export interface CapabilityGates {
   /** Founding a new religion */
-  found_religion?: { leadership_min: number; charisma_min: number };
+  found_religion?: { ambition_min: number; charisma_min: number };
   /** Founding a new faction */
-  found_faction?:  { leadership_min: number; charisma_min: number };
+  found_faction?:  { ambition_min: number; charisma_min: number };
   /** Agentic murder action */
-  agentic_murder?: { honesty_max: number; bond_max: number };
+  agentic_murder?: { loyalty_max: number; bond_max: number };
   /** Agentic marry action */
   agentic_marry?:  { bond_min: number };
   /** Agentic betray action */
@@ -297,6 +304,31 @@ export interface CapabilityGates {
  * Kept in shared so the ruleset author and the tick engine agree.
  */
 export const PREGNANCY_DURATION_TICKS = 2;
+
+/**
+ * Maximum interaction pairs sampled per bi-annual phase.
+ * Constant regardless of population size — keeps bi-annual cost O(K) not O(N²).
+ * At K=500 a world of 1 000 still gets meaningful churn; 10 000 isn't saturated.
+ */
+export const K_INTERACTION_PAIRS = 500;
+
+/**
+ * Phase 5 — leader skim. Fraction of group balance a maximally self-serving
+ * leader extracts per year. Actual cut scales by (cunning / 100), so a
+ * cunning=100 leader takes the full 20 % and a cunning=0 leader takes nothing.
+ * Members never notice — no memories, no happiness hit.
+ */
+export const LEADER_EXTRACTION_RATE = 0.20;
+
+/**
+ * Phase 5 — small-group pruning. Per bi-annual disband probability is
+ * `(20 - member_count) × SMALL_GROUP_DISBAND_RATE`. Groups at or above 20
+ * members are immune; a 1-member group has ~28.5 % bi-annual / ~49 %
+ * annual attrition. On disband the leader inherits the balance, members
+ * are released, and the row is soft-deleted via `disbanded_at`.
+ */
+export const SMALL_GROUP_DISBAND_RATE = 0.015;
+export const SMALL_GROUP_DISBAND_THRESHOLD = 20;
 
 /**
  * Variance applied per identity attribute when averaging parent traits at
@@ -374,13 +406,7 @@ export const DEFAULT_GLOBAL_TRAIT_MULTIPLIERS: Record<string, number> = {
   discovery: 1.0,
 };
 
-// --------------- Tick engine ---------------
-
-export interface TickTopScore {
-  protagonist_name: string;
-  score:            number;
-  outcome:          string;
-}
+// --------------- Market events ---------------
 
 export type MarketEventKind = 'crash' | 'boom' | 'bubble' | 'depression';
 
@@ -392,33 +418,6 @@ export interface MarketEvent {
   market_idx:  number;
   /** Reportage-voice one-liner for the headline surface. */
   description: string;
-}
-
-export interface TickResult {
-  tick_number:             number;
-  world_year:              number;
-  interactions_processed:  number;
-  deaths_this_tick:        number;
-  births_this_tick:        number;
-  /** Market return as a percentage (e.g. 2.1 = +2.1%) */
-  market_return_pct:       number;
-  new_market_index:        number;
-  /** Round 8 — populated when this tick crossed a crash/boom/bubble/depression threshold. */
-  market_event?:           MarketEvent | null;
-  /** Best score per interaction type id */
-  top_scores:              Record<string, TickTopScore>;
-  /** Phase 7 Wave 3 — agentic actions that fired on year-boundary ticks. */
-  agentic_actions?:        AgenticActionLog[];
-}
-
-/** One deliberate action taken by a high-agency agent during the yearly pass. */
-export interface AgenticActionLog {
-  kind:          'befriend' | 'betray' | 'marry' | 'murder';
-  agent_id:      string;
-  agent_name:    string;
-  target_id:     string;
-  target_name:   string;
-  killed_target: boolean;
 }
 
 // --------------- Economy ---------------
@@ -462,7 +461,7 @@ export interface EconomyState {
   market_highlights: MarketHighlights | Record<string, never>;
   market_member_counts: { stable: number; standard: number; volatile: number };
   // World state
-  tick_count:               number;
+  year_count:               number;
   total_deaths:             number;
   current_year:             number;
   global_trait_multipliers: Record<string, number>;
@@ -498,7 +497,7 @@ export interface DeceasedPerson {
   world_year:            number;
   cause:                 string;
   final_health:          number;
-  final_wealth:          number;
+  final_money:           number;
   peak_positive_outcome: string | null;
   peak_negative_outcome: string | null;
   died_at:               string;
@@ -530,7 +529,7 @@ export interface CriminalRecord {
 
 /**
  * Full Person entity as returned from the API.
- * All 0-100 stats are typed as integers; wealth is a float.
+ * Combat stats are derived from BODY traits + MIND amplifier each tick.
  */
 export interface Person {
   id:                  string;   // UUID
@@ -549,19 +548,40 @@ export interface Person {
   religion:            string;
   criminal_record:     CriminalRecord[];
 
-  // ── Vital stat ───────────────────────────────────────────
-  /// Life/death column, synced from traits.health. 0 = dead.
-  health:              number;
+  // ── Combat stats (derived each tick from BODY + MIND) ────
+  /** Health ceiling set by endurance. 0–100. */
+  max_health:          number;
+  /** Health pool. Drops in altercations, recovers via resilience. 0 = dead. */
+  current_health:      number;
+  /** Derived from strength. 0–100. */
+  attack:              number;
+  /** Derived from endurance blend. 0–100. */
+  defense:             number;
+  /** Derived from agility. 0–100. */
+  speed:               number;
 
   // ── Trauma (Round 3) ─────────────────────────────────────
-  /// Emotional scar tissue 0-100; accumulates from negative memories,
-  /// decays annually, subtracted from interaction scoring.
+  /** Emotional scar tissue 0-100; accumulates from negative memories,
+   *  decays annually, subtracted from interaction scoring. */
   trauma_score:        number;
 
-  // ── Other ────────────────────────────────────────────────
+  // ── Wellbeing (Phase 2 events) ───────────────────────────
+  /** Happiness pool 0-100. Drifts toward 50 naturally. Affected by world events. */
+  happiness:           number;
+
+  // ── Economy ──────────────────────────────────────────────
   physical_appearance: string;
-  wealth:              number;   // float, no upper bound
-  traits:              TraitSet; // 25 identity attributes (0-100) — beauty, strength, cunning, etc.
+  /** Phase 1 — static job key (e.g. 'blacksmith'). Null = unemployed. Auto-assigned on first tick. */
+  job_id?:             string | null;
+  money:               number;   // integer; no upper bound
+  money_invested:      number;   // amount currently invested in market bucket
+
+  // ── Status ───────────────────────────────────────────────
+  /** −100 (corrupt) to +100 (virtuous). */
+  moral_score:         number;
+
+  // ── Traits ───────────────────────────────────────────────
+  traits:              TraitSet; // 16 meta traits (0-100) across BODY/MIND/HEART/DRIVE
   /** Personal global force scores, keyed by "force.child" e.g. "war.morale" */
   global_scores:       Record<string, number>;
 
@@ -711,7 +731,7 @@ export interface World {
   population_tier:          PopulationTier;
   ruleset_id:               string | null;
   current_year:             number;
-  tick_count:               number;
+  year_count:               number;
   total_deaths:             number;
   market_index:             number;
   market_trend:             number;
@@ -767,17 +787,17 @@ export interface MutationResult {
 // --------------- List / search ---------------
 
 export interface CharacterListItem {
-  id:            string;
-  name:          string;
-  age:           number;
-  health:        number;
-  wealth:        number;
-  updated_at:    string;
-  global_scores: Record<string, number>;
-  traits?:       Record<string, number>;
-  occupation?:   string;
-  race?:         string;
-  religion?:     string;
+  id:             string;
+  name:           string;
+  age:            number;
+  current_health: number;
+  money:          number;
+  updated_at:     string;
+  global_scores:  Record<string, number>;
+  traits?:        Record<string, number>;
+  occupation?:    string;
+  race?:          string;
+  religion?:      string;
 }
 
 /**
@@ -786,27 +806,27 @@ export interface CharacterListItem {
  * without N+1-ing a second fetch per card.
  */
 export interface PeopleListItem {
-  id:            string;
-  name:          string;
-  age:           number;
-  gender:        string;
-  race:          string;
-  religion:      string;
-  health:        number;
-  wealth:        number;
-  updated_at:    string;
-  global_scores: Record<string, number>;
+  id:             string;
+  name:           string;
+  age:            number;
+  gender:         string;
+  race:           string;
+  religion:       string;
+  current_health: number;
+  money:          number;
+  updated_at:     string;
+  global_scores:  Record<string, number>;
   /** Subset of identity traits for quick display (from traits JSONB) */
-  traits:        Record<string, number>;
-  factions:      { id: string; name: string }[];
+  traits:         Record<string, number>;
+  factions:       { id: string; name: string }[];
 }
 
 export type PeopleStatus = 'alive' | 'dead' | 'all';
 export type PeopleSortField =
   | 'name'
   | 'age'
-  | 'wealth'
-  | 'health'
+  | 'money'
+  | 'current_health'
   | 'updated_at';
 
 export interface PeopleSearchParams {
@@ -845,8 +865,8 @@ type NumericOp = 'lt' | 'lte' | 'gt' | 'gte';
  *                  global_score.<key>  (e.g. "war.morale")
  */
 export type FilterClause =
-  | { field: 'age' | 'health' | 'wealth'; op: NumericOp; value: number }
-  | { field: 'age' | 'health' | 'wealth'; op: 'between'; min: number; max: number }
+  | { field: 'age' | 'current_health' | 'money'; op: NumericOp; value: number }
+  | { field: 'age' | 'current_health' | 'money'; op: 'between'; min: number; max: number }
   | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'eq'; value: string }
   | { field: 'race' | 'occupation' | 'religion' | 'gender'; op: 'in'; values: string[] }
   | { field: `trait.${string}`; op: NumericOp; value: number }
@@ -892,3 +912,9 @@ export interface BulkActionResult {
   affected:               number;
   memory_entries_created: number;
 }
+
+// --------------- Jobs (Phase 1 economy) ---------------
+export * from './jobs';
+
+// --------------- Events (Phase 2 world events) ---------------
+export * from './events';

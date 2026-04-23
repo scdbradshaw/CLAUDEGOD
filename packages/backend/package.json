@@ -24,6 +24,7 @@
     "express": "^4.19.2",
     "express-async-errors": "^3.1.1",
     "morgan": "^1.10.0",
+    "pg-boss": "^12.16.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

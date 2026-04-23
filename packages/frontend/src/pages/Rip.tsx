@@ -18,7 +18,7 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
   { key: 'died_at',      label: 'Recently deceased' },
   { key: 'world_year',   label: 'Year of death'     },
   { key: 'age_at_death', label: 'Age at death'      },
-  { key: 'final_wealth', label: 'Final wealth'      },
+  { key: 'final_money',  label: 'Final money'       },
   { key: 'name',         label: 'Name'              },
 ];
 
@@ -49,8 +49,8 @@ function RipCard({ person }: { person: DeceasedPerson }) {
           <span className="text-red-500 font-medium">{person.final_health}</span>
         </div>
         <div>
-          <span className="block text-zinc-700 mb-0.5">Wealth</span>
-          <span className="text-amber-500/70 font-medium">{wealthStr(person.final_wealth)}</span>
+          <span className="block text-zinc-700 mb-0.5">Money</span>
+          <span className="text-amber-500/70 font-medium">{wealthStr(person.final_money)}</span>
         </div>
       </div>
 

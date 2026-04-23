@@ -148,16 +148,20 @@ export const ARCHETYPE_LABELS = ARCHETYPES.map(a => a.label);
 // ── Trait biases ──────────────────────────────────────────────
 
 const TRAIT_BIASES: Record<string, Partial<Record<string, number>>> = {
-  noble:    { leadership: 25, charisma: 20, ambition: 20, beauty: 15, persuasion: 15 },
-  merchant: { cunning: 25, persuasion: 25, ambition: 20, intelligence: 10 },
-  soldier:  { combat: 25, strength: 20, endurance: 20, courage: 15, discipline: 10, health: 15 },
-  criminal: { cunning: 25, street_smarts: 20, honesty: -30, resilience: 15 },
-  scholar:  { intelligence: 25, curiosity: 25, memory: 20, creativity: 15 },
-  priest:   { empathy: 20, discipline: 25, charisma: 15, resilience: 15, honesty: 10 },
-  farmer:   { endurance: 20, strength: 15, resilience: 20, discipline: 10, health: 10 },
-  wanderer: { survival: 25, street_smarts: 20, resilience: 15, agility: 10 },
-  artisan:  { craftsmanship: 25, artistry: 20, creativity: 15, discipline: 10 },
-  elder:    { intelligence: 10, empathy: 20, resilience: 20, memory: 15, health: -15 },
+  // BODY: strength, endurance, agility, resilience
+  // MIND: intelligence, willpower, intuition, creativity
+  // HEART: charisma, empathy, loyalty, jealousy
+  // DRIVE: ambition, courage, discipline, cunning
+  noble:    { ambition: 20, charisma: 20, willpower: 15, discipline: 15, loyalty: 10 },
+  merchant: { cunning: 25, ambition: 20, intelligence: 15, discipline: 15 },
+  soldier:  { strength: 20, endurance: 20, courage: 20, discipline: 15, resilience: 10 },
+  criminal: { cunning: 25, agility: 15, courage: 15, loyalty: -30, willpower: -10 },
+  scholar:  { intelligence: 25, intuition: 20, creativity: 20, willpower: 10 },
+  priest:   { empathy: 20, willpower: 20, charisma: 15, discipline: 15, loyalty: 15 },
+  farmer:   { endurance: 20, strength: 15, resilience: 20, discipline: 15 },
+  wanderer: { resilience: 20, agility: 20, cunning: 15, intuition: 10 },
+  artisan:  { creativity: 20, discipline: 20, endurance: 15, intelligence: 10 },
+  elder:    { intelligence: 10, empathy: 20, resilience: 20, willpower: 15, endurance: -15 },
 };
 
 // ── Generation functions ──────────────────────────────────────
@@ -236,11 +240,19 @@ export interface GeneratedCharacter {
   relationship_status: string;
   religion:            string;
   criminal_record:     object[];
-  /** Life/death column — synced from traits.health at generation time. */
-  health:              number;
+  /** Health ceiling from endurance. 0–100. */
+  max_health:          number;
+  /** Health pool — 0 = dead. */
+  current_health:      number;
+  /** Derived combat stats seeded to neutral at creation. */
+  attack:              number;
+  defense:             number;
+  speed:               number;
   physical_appearance: string;
-  wealth:              number;
-  /** All 25 identity attributes (0-100), including health. */
+  money:               number;
+  money_invested:      number;
+  moral_score:         number;
+  /** 16 meta traits (0-100) across BODY/MIND/HEART/DRIVE. */
   traits:              Record<string, number>;
   global_scores:       Record<string, number>;
   /** Which of the three markets this person invests in. */
@@ -300,8 +312,6 @@ export function generateChildCharacter(
       traits[key] = clamp(Math.round(mean + variance));
     }
   }
-  const health = traits['health'] ?? 100;
-
   return {
     name:                getName(race === MIXED_RACE_LABEL ? pick([parentA.race, parentB.race]) : race, gender),
     sexuality,
@@ -313,9 +323,15 @@ export function generateChildCharacter(
     relationship_status: 'Single',
     religion,
     criminal_record:     [],
-    health,
+    max_health:          100,
+    current_health:      100,
+    attack:              50,
+    defense:             50,
+    speed:               50,
     physical_appearance: `Newborn. ${getAppearance(race === MIXED_RACE_LABEL ? parentA.race : race, gender, 0)}`,
-    wealth:              0,
+    money:               0,
+    money_invested:      0,
+    moral_score:         0,
     traits,
     global_scores:       generateGlobalScores(worldGlobalTraits),
     market_bucket:       assignMarketBucket(traits),
@@ -393,8 +409,6 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
   const sexuality = pick(SEXUALITIES);
 
   const traits   = generateTraits(archetype.label);
-  // Health column synced from traits.health so they start in agreement.
-  const health   = traits['health'] ?? 100;
 
   const criminalRecord = archetype.label === 'criminal' && Math.random() > 0.3
     ? [{ offense: pick(['Theft','Assault','Smuggling','Fraud','Arson','Murder','Extortion','Trespassing']), date: `Year ${rnd(1,50)}`, severity: pick(['minor','moderate','severe']), status: pick(['convicted','pending','acquitted']) }]
@@ -411,9 +425,15 @@ export function generateCharacter(archetypeLabel?: string, worldGlobalTraits: Re
     relationship_status: pick(RELATIONSHIPS),
     religion:            pick(RELIGIONS),
     criminal_record:     criminalRecord,
-    health,
+    max_health:          100,
+    current_health:      100,
+    attack:              50,
+    defense:             50,
+    speed:               50,
     physical_appearance: getAppearance(race, gender, age),
-    wealth:              parseFloat((Math.random() * (archetype.wealthMax - archetype.wealthMin) + archetype.wealthMin).toFixed(2)),
+    money:               Math.round(Math.random() * (archetype.wealthMax - archetype.wealthMin) + archetype.wealthMin),
+    money_invested:      0,
+    moral_score:         0,
     traits,
     global_scores:       generateGlobalScores(worldGlobalTraits),
     market_bucket:       assignMarketBucket(traits),

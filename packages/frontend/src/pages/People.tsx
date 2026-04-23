@@ -24,8 +24,8 @@ const SORT_OPTIONS: { value: PeopleSortField; label: string }[] = [
   { value: 'updated_at', label: 'Recently changed' },
   { value: 'name',       label: 'Name'              },
   { value: 'age',        label: 'Age'               },
-  { value: 'health',     label: 'Health'            },
-  { value: 'wealth',     label: 'Wealth'            },
+  { value: 'current_health', label: 'Health'  },
+  { value: 'money',         label: 'Money'   },
 ];
 
 const STATUS_OPTIONS: { value: PeopleStatus; label: string }[] = [
@@ -52,7 +52,7 @@ function wealthStr(w: number): string {
 // ── PersonCard ──────────────────────────────────────────────
 
 function PersonCard({ p }: { p: PeopleListItem }) {
-  const dead = p.health === 0;
+  const dead = p.current_health === 0;
   return (
     <Link
       to={`/characters/${p.id}`}
@@ -67,14 +67,14 @@ function PersonCard({ p }: { p: PeopleListItem }) {
           </p>
         </div>
         <span
-          className={`shrink-0 w-2 h-2 rounded-full mt-1 ${healthColor(p.health)}`}
-          title={`Health ${p.health}`}
+          className={`shrink-0 w-2 h-2 rounded-full mt-1 ${healthColor(p.current_health)}`}
+          title={`Health ${p.current_health}`}
         />
       </div>
 
       {/* Health bar */}
       <div className="w-full h-1 rounded bg-zinc-800 overflow-hidden mb-2">
-        <div className={`h-full ${healthColor(p.health)} transition-all`} style={{ width: `${p.health}%` }} />
+        <div className={`h-full ${healthColor(p.current_health)} transition-all`} style={{ width: `${p.current_health}%` }} />
       </div>
 
       {/* Religion / factions row */}
@@ -95,7 +95,7 @@ function PersonCard({ p }: { p: PeopleListItem }) {
         <span className="text-muted">
           Leadership <span className="text-zinc-300">{(p.traits as Record<string, number>)?.['leadership'] ?? '—'}</span>
         </span>
-        <span className="text-gold">{wealthStr(p.wealth)}</span>
+        <span className="text-gold">{wealthStr(p.money)}</span>
       </div>
     </Link>
   );

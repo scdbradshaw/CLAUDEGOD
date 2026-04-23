@@ -3,6 +3,7 @@ import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
+import { PgBoss } from 'pg-boss';
 
 import charactersRouter    from './routes/characters';
 import godModeRouter       from './routes/god-mode';
@@ -17,9 +18,15 @@ import religionsRouter     from './routes/religions';
 import factionsRouter      from './routes/factions';
 import worldsRouter        from './routes/worlds';
 import citiesRouter        from './routes/cities';
+import eventsRouter        from './routes/events';
+import yearsRouter         from './routes/years';
 import { prisma }          from './db/client';
 import { startJobWorker, registerJobHandler } from './services/jobs.service';
 import { generateHeadlinesForYear, ensureDecadeSummaries } from './services/headlines.service';
+import { processYearJob } from './services/year.service';
+
+// ── pg-boss instance (exported for use by year pipeline) ─────
+export const boss = new PgBoss(process.env.DATABASE_URL!);
 
 const app  = express();
 const PORT = process.env.PORT ?? 3001;
@@ -43,6 +50,8 @@ app.use('/api/religions',     religionsRouter);
 app.use('/api/factions',      factionsRouter);
 app.use('/api/worlds',        worldsRouter);
 app.use('/api/cities',        citiesRouter);
+app.use('/api/events',        eventsRouter);
+app.use('/api/years',         yearsRouter);
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
 
@@ -84,6 +93,19 @@ registerJobHandler('generate_decade_headlines', async ({ worldId, payload }) => 
 async function main() {
   await prisma.$connect();
   console.log('Connected to database');
+
+  // pg-boss creates its own `pgboss` schema on first start
+  await boss.start();
+  console.log('pg-boss started');
+
+  // pg-boss 10+ requires explicit queue creation before workers or senders
+  // can reference a queue name. createQueue is idempotent.
+  await boss.createQueue('advance_year');
+
+  // Register year pipeline worker
+  await boss.work('advance_year', { localConcurrency: 1 }, processYearJob);
+  console.log('Year pipeline worker registered');
+
   startJobWorker();
   console.log('Job worker started');
   app.listen(PORT, () => console.log(`Backend listening on http://localhost:${PORT}`));

@@ -13,7 +13,7 @@ const router = Router();
 // Only sort fields we've explicitly whitelisted reach Prisma — prevents a
 // hostile `?sort=drop table` from flowing into an orderBy clause.
 const SORT_FIELDS = new Set([
-  'died_at', 'world_year', 'age_at_death', 'final_wealth', 'name',
+  'died_at', 'world_year', 'age_at_death', 'final_money', 'name',
 ]);
 
 function parseYear(v: unknown): number | undefined {

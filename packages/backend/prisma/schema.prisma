@@ -122,7 +122,10 @@ model World {
 
   // ── Operational state (was WorldState) ──────────────────────
   current_year              Int    @default(1)
-  tick_count                Int    @default(0)
+  /// Years elapsed in this world. Incremented once per year-end phase by the async pipeline.
+  year_count                Int    @default(0)
+  /// 0 = bi-annual A just ran, 1 = bi-annual B just ran. Resets to 0 on year-end.
+  bi_annual_index           Int    @default(0)
   total_deaths              Int    @default(0)
   /// Standard (index) market — used as the default wealth-drift baseline.
   market_index              Float  @default(1.0)
@@ -155,12 +158,16 @@ model World {
   religions      Religion[]
   factions       Faction[]
   deceased       DeceasedPerson[]
+  world_events   WorldEvent[]
   headlines      YearlyHeadline[]
   world_memories WorldMemory[]
   tick_jobs      TickJob[]
   yearly_reports YearlyReport[]
   pregnancies    Pregnancy[]
   city           City?
+  year_runs      YearRun[]
+  snapshot       WorldSnapshot?
+  event_history  EventHistory[]
 
   @@index([is_active])
   @@map("worlds")
@@ -207,11 +214,18 @@ model Person {
   /// JSONB array of CriminalRecord objects
   criminal_record     Json   @default("[]")
 
-  // ── Vital ────────────────────────────────────────────────
-  /// Life/death indicator — synced from traits.health each tick.
-  /// 0 = dead; 1-100 = alive. Kept as a column so SQL WHERE health > 0
-  /// can use the index without parsing JSONB.
-  health Int @default(100) // 0-100
+  // ── Combat stats (derived each tick from BODY traits + MIND amplifier) ──
+  /// Ceiling for current_health. Set by endurance. 0–100.
+  max_health     Int @default(100)
+  /// Health pool — drops in altercations, recovers per tick based on resilience.
+  /// 0 = dead. Kept as a column so SQL WHERE current_health > 0 uses the index.
+  current_health Int @default(100)
+  /// Derived from strength. 0–100.
+  attack         Int @default(50)
+  /// Derived from endurance blend. 0–100.
+  defense        Int @default(50)
+  /// Derived from agility. 0–100.
+  speed          Int @default(50)
 
   // ── Trauma (Round 3) ─────────────────────────────────────
   /// Emotional scar tissue accumulated from negative memory writes and
@@ -222,12 +236,31 @@ model Person {
 
   // ── Other ────────────────────────────────────────────────
   physical_appearance String
-  /// Floating-point; no enforced upper bound
-  wealth              Float  @default(0.0)
+  /// Happiness pool 0-100. Drifts toward 50 each tick. Affected by events.
+  happiness           Int     @default(50)
+  /// Phase 1 — lazy happiness drift base value. effectiveHappiness helper not yet built (see DESIGN §0.5 Phase 3).
+  happiness_base      Int     @default(50)
+  /// Effective tick (year_count * 2 + bi_annual_index) at which happiness_base was last set.
+  happiness_set_tick  Int     @default(0)
+  /// Effective tick (year_count * 2 + bi_annual_index) at which trauma_score was last set. Used for lazy decay computation.
+  trauma_set_tick     Int     @default(0)
+  /// Job id key from the static ALL_JOBS list (e.g. 'blacksmith'). Null = unemployed.
+  job_id              String?
+  /// Current money (integer). Renamed from `wealth`.
+  money               Int    @default(0)
+  /// Amount of money currently invested in this person's market bucket.
+  money_invested      Int    @default(0)
+  /// −100–100. Positive = virtuous, negative = corrupt/criminal.
+  moral_score         Int    @default(0)
   /// Which of the three markets this person invests in. Assigned at creation
   /// based on intelligence + cunning traits. 'stable' | 'standard' | 'volatile'
   market_bucket       String @default("standard")
-  /// JSONB map of all 100 survival/philosophy traits (0-100 each)
+  /// JSONB map of the 4 meta trait categories: body, mind, heart, drive.
+  /// Each category holds 4 traits scored 0–100 (neutral = 50).
+  /// Shape: { body: { strength, endurance, agility, resilience },
+  ///          mind: { intelligence, willpower, intuition, creativity },
+  ///          heart: { charisma, empathy, loyalty, jealousy },
+  ///          drive: { ambition, courage, discipline, cunning } }
   traits              Json   @default("{}")
   /// JSONB map of personal global force scores e.g. { "war.morale": 45 }
   global_scores       Json   @default("{}")
@@ -262,6 +295,7 @@ model Person {
   children_b           Person[]             @relation("ParentB")
   pregnancies_a        Pregnancy[]          @relation("PregnancyParentA")
   pregnancies_b        Pregnancy[]          @relation("PregnancyParentB")
+  event_statuses       PersonEventStatus[]
 
   @@index([world_id])
   @@index([parent_a_id])
@@ -386,7 +420,7 @@ model DeceasedPerson {
   /// 'interaction' | 'old_age' | 'health'
   cause                 String
   final_health          Int
-  final_wealth          Float
+  final_money           Int
   peak_positive_outcome String?
   peak_negative_outcome String?
   died_at               DateTime @default(now())
@@ -469,12 +503,16 @@ model Religion {
   cost_per_tick Int         @default(0)
   /// Minimum trait values required for membership, e.g. { "intelligence": 60 }.
   trait_minimums Json       @default("{}")
+  /// Group treasury — funded by member cost_per_tick; drained by war events.
+  balance       Int         @default(0)
 
   founded_year     Int
-  is_active        Boolean @default(true)
+  is_active        Boolean   @default(true)
   dissolved_year   Int?
   /// 'founder_death' | 'leader_void' | 'player' | 'split'
   dissolved_reason String?
+  /// Phase 1 — soft-delete timestamp for the new pipeline. Null = still active.
+  disbanded_at     DateTime?
 
   world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
   world_id String @db.Uuid
@@ -535,12 +573,16 @@ model Faction {
   cost_per_tick  Int        @default(0)
   /// Minimum trait values required for membership, e.g. { "charisma": 50 }.
   trait_minimums Json       @default("{}")
+  /// Group treasury — funded by member cost_per_tick; drained by war events.
+  balance        Int        @default(0)
 
   founded_year     Int
-  is_active        Boolean @default(true)
+  is_active        Boolean   @default(true)
   dissolved_year   Int?
   /// 'leader_void' | 'player' | 'split' | 'merged'
   dissolved_reason String?
+  /// Phase 1 — soft-delete timestamp for the new pipeline. Null = still active.
+  disbanded_at     DateTime?
 
   /// If this faction was born from a split, the parent faction id.
   split_from_id String? @db.Uuid
@@ -765,4 +807,118 @@ model YearlyReport {
   @@unique([world_id, year])
   @@index([world_id])
   @@map("yearly_reports")
+}
+
+// --------------- World Events ---------------
+// Player-activated events that run every tick until disabled.
+// Max 6 active events per world (enforced in routes/events.ts).
+// event_def_id keys into the static EVENT_CATALOG in shared/src/events.ts.
+model WorldEvent {
+  id           String   @id @default(uuid()) @db.Uuid
+  world        World    @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id     String   @db.Uuid
+  /// Key into static EVENT_CATALOG e.g. 'plague' | 'war' | 'golden_age' etc.
+  event_def_id String
+  /// Activation parameters (JSON matching the event's ParamSchema).
+  params       Json
+  started_tick Int
+  started_year Int
+  /// Phase 1 — how many years this event runs. Null = indefinite (player ends manually).
+  duration_years  Int?
+  /// Counts down by 0.5 each bi-annual. When ≤0 the event auto-expires.
+  years_remaining Float   @default(0)
+  /// Active events tick every cycle. Player sets to false to stop.
+  is_active    Boolean  @default(true)
+  created_at   DateTime @default(now())
+
+  statuses PersonEventStatus[]
+
+  @@index([world_id])
+  @@index([world_id, is_active])
+  @@map("world_events")
+}
+
+// --------------- Year Run (async pipeline tracker) ---------------
+// One row per Advance Year call. Tracks pipeline progress so the SSE
+// endpoint can stream phase updates to the frontend.
+model YearRun {
+  id       String @id @default(uuid()) @db.Uuid
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  year         Int
+  /// Current pipeline phase: 'bi_annual_a' | 'bi_annual_b' | 'year_end' | 'completed' | 'failed'
+  phase        String @default("bi_annual_a")
+  /// 0–100 progress within the current phase.
+  progress_pct Int    @default(0)
+  /// 'running' | 'completed' | 'failed'
+  status       String @default("running")
+
+  error        String?
+  message      String?
+
+  started_at   DateTime  @default(now())
+  completed_at DateTime?
+
+  @@index([world_id])
+  @@index([world_id, status])
+  @@map("year_runs")
+}
+
+// --------------- World Snapshot (denormalized world view) ---------------
+// One row per world. Upserted after each bi-annual phase. The /world
+// frontend route reads exclusively from this — no aggregation queries.
+model WorldSnapshot {
+  id       String @id @default(uuid()) @db.Uuid
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @unique @db.Uuid
+
+  /// Full denormalized world view. Shape defined in DESIGN.md §0.5 Phase 6.
+  payload Json @default("{}")
+
+  updated_at DateTime @updatedAt
+
+  @@map("world_snapshots")
+}
+
+// --------------- Event History (completed events archive) ---------------
+// Written when a WorldEvent ends (expired / manually ended / condition met).
+model EventHistory {
+  id       String @id @default(uuid()) @db.Uuid
+  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  world_id String @db.Uuid
+
+  event_def_id    String
+  params          Json   @default("{}")
+  started_year    Int
+  ended_year      Int
+  /// 'expired' | 'manual' | 'condition_met'
+  end_reason      String
+  /// Actual number of years the event ran.
+  duration_actual Int?
+
+  created_at DateTime @default(now())
+
+  @@index([world_id])
+  @@map("event_history")
+}
+
+// --------------- Person Event Status ---------------
+// Tracks per-person state for events that infect / mark individuals
+// (e.g. Plague infected list). One row per (event, person) pair.
+model PersonEventStatus {
+  id        String     @id @default(uuid()) @db.Uuid
+  event     WorldEvent @relation(fields: [event_id], references: [id], onDelete: Cascade)
+  event_id  String     @db.Uuid
+  person    Person     @relation(fields: [person_id], references: [id], onDelete: Cascade)
+  person_id String     @db.Uuid
+  /// 'infected' | 'recovered' — extensible for future event states
+  status    String
+
+  created_at DateTime @default(now())
+
+  @@unique([event_id, person_id])
+  @@index([event_id])
+  @@index([person_id])
+  @@map("person_event_statuses")
 }

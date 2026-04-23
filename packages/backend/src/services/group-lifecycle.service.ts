@@ -5,7 +5,7 @@
 // Round 4: Leader death handler with succession.
 //   When a person dies who led a group (faction OR religion):
 //     - Try to promote an heir from the living membership.
-//     - Composite score = leadership + charisma + bond_to_dead.
+//     - Composite score = ambition + charisma + bond_to_dead.
 //     - Below MIN_HEIR_COMPOSITE we fall back to dissolution.
 //   Succession writes a `leader_succession` group memory and per-member
 //   memories (literary tone, high weight) so the moment shows up in
@@ -38,7 +38,7 @@ const FAITH_LOST_MAGNITUDE = 0.8;
 /** Succession memory parameters — literary tone, high weight. */
 const SUCCESSION_MAGNITUDE = 0.75;
 /**
- * Minimum composite score (leadership + charisma + bond-to-dead) for an
+ * Minimum composite score (ambition + charisma + bond-to-dead) for an
  * heir to be considered worthy. Below this, the group dissolves because
  * nobody can carry the torch. Range: 0-300; 100 is "mediocre but alive".
  */
@@ -84,17 +84,17 @@ export interface GroupDeathOutcome {
 }
 
 interface HeirPick {
-  person_id:  string;
-  name:       string;
-  composite:  number;
-  leadership: number;
-  charisma:   number;
-  bond:       number;
+  person_id: string;
+  name:      string;
+  composite: number;
+  ambition:  number;
+  charisma:  number;
+  bond:      number;
 }
 
 /**
  * Among the living members of a group (excluding the dying leader),
- * pick the member with the highest composite = leadership + charisma +
+ * pick the member with the highest composite = ambition + charisma +
  * bond_to_dead. Returns null when no candidate clears MIN_HEIR_COMPOSITE
  * — the caller should then dissolve the group.
  */
@@ -108,9 +108,9 @@ async function pickHeir(
 
   const persons = await tx.person.findMany({
     where:  { id: { in: candidateIds } },
-    select: { id: true, name: true, traits: true, health: true },
+    select: { id: true, name: true, traits: true, current_health: true },
   });
-  const alive = persons.filter(p => p.health > 0);
+  const alive = persons.filter(p => p.current_health > 0);
   if (alive.length === 0) return null;
 
   const bonds = await tx.innerCircleLink.findMany({
@@ -125,13 +125,13 @@ async function pickHeir(
 
   let best: HeirPick | null = null;
   for (const p of alive) {
-    const traits     = (p.traits ?? {}) as Record<string, number>;
-    const leadership = typeof traits.leadership === 'number' ? traits.leadership : 0;
-    const charisma   = typeof traits.charisma   === 'number' ? traits.charisma   : 0;
-    const bond       = bondByOwner.get(p.id) ?? 0;
-    const composite  = leadership + charisma + bond;
+    const traits    = (p.traits ?? {}) as Record<string, number>;
+    const ambition  = typeof traits.ambition === 'number' ? traits.ambition : 0;
+    const charisma  = typeof traits.charisma === 'number' ? traits.charisma : 0;
+    const bond      = bondByOwner.get(p.id) ?? 0;
+    const composite = ambition + charisma + bond;
     if (!best || composite > best.composite) {
-      best = { person_id: p.id, name: p.name, composite, leadership, charisma, bond };
+      best = { person_id: p.id, name: p.name, composite, ambition, charisma, bond };
     }
   }
 

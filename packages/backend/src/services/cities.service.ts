@@ -65,7 +65,7 @@ export async function getOrCreateDefaultCity(worldId: string) {
 export async function getCityWithStats(worldId: string) {
   const city = await getOrCreateDefaultCity(worldId);
   const [population, dead_total] = await Promise.all([
-    prisma.person.count({ where: { world_id: worldId, health: { gt: 0 } } }),
+    prisma.person.count({ where: { world_id: worldId, current_health: { gt: 0 } } }),
     prisma.deceasedPerson.count({ where: { world_id: worldId } }),
   ]);
   return {

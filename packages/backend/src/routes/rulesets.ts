@@ -10,11 +10,11 @@ import type { RulesetDef } from '@civ-sim/shared';
 const router = Router();
 
 // ── Default starter ruleset ──────────────────────────────────
-// Trait weights reference the 25 identity attributes defined in
-// IDENTITY_ATTRIBUTES. Any unknown trait key is silently skipped by
-// the engine, so rulesets can evolve ahead of the attribute schema.
+// Trait weights reference the 16 identity attributes in IDENTITY_ATTRIBUTES
+// (4 categories × 4 traits: body/mind/heart/drive). Any unknown trait key
+// is silently skipped, so rulesets can evolve ahead of the attribute schema.
 export const DEFAULT_RULESET: RulesetDef = {
-  version: 5,
+  version: 6,
 
   interaction_types: [
     {
@@ -22,13 +22,13 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Conflict',
       weight: 3,
       trait_weights: [
-        { trait: 'combat',        sign:  1 },
-        { trait: 'strength',      sign:  1 },
-        { trait: 'courage',       sign:  1 },
-        { trait: 'cunning',       sign:  1 },
-        { trait: 'discipline',    sign:  1 },
-        { trait: 'empathy',       sign: -1 },
-        { trait: 'resilience',    sign:  1 },
+        { trait: 'strength',   sign:  1 },
+        { trait: 'endurance',  sign:  1 },
+        { trait: 'courage',    sign:  1 },
+        { trait: 'cunning',    sign:  1 },
+        { trait: 'discipline', sign:  1 },
+        { trait: 'empathy',    sign: -1 },
+        { trait: 'resilience', sign:  1 },
       ],
       global_amplifiers: [
         { key: 'war.morale',            multiplier: 0.30 },
@@ -42,17 +42,17 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Trade',
       weight: 3,
       trait_weights: [
-        { trait: 'persuasion',    sign:  1 },
-        { trait: 'charisma',      sign:  1 },
-        { trait: 'intelligence',  sign:  1 },
-        { trait: 'cunning',       sign:  1 },
-        { trait: 'street_smarts', sign:  1 },
-        { trait: 'honesty',       sign:  1 },
+        { trait: 'charisma',     sign:  1 },
+        { trait: 'intelligence', sign:  1 },
+        { trait: 'cunning',      sign:  1 },
+        { trait: 'ambition',     sign:  1 },
+        { trait: 'discipline',   sign:  1 },
+        { trait: 'loyalty',      sign:  1 },  // trustworthy trading partners close deals
       ],
       global_amplifiers: [
-        { key: 'scarcity.material_wealth',    multiplier: 0.30 },
-        { key: 'discovery.knowledge_spread',  multiplier: 0.20 },
-        { key: 'tyranny.oppression',          multiplier: 0.15 },
+        { key: 'scarcity.material_wealth',   multiplier: 0.30 },
+        { key: 'discovery.knowledge_spread', multiplier: 0.20 },
+        { key: 'tyranny.oppression',         multiplier: 0.15 },
       ],
     },
 
@@ -63,10 +63,11 @@ export const DEFAULT_RULESET: RulesetDef = {
       trait_weights: [
         { trait: 'empathy',    sign:  1 },
         { trait: 'charisma',   sign:  1 },
-        { trait: 'humor',      sign:  1 },
-        { trait: 'honesty',    sign:  1 },
+        { trait: 'loyalty',    sign:  1 },
+        { trait: 'willpower',  sign:  1 },
         { trait: 'discipline', sign:  1 },
         { trait: 'cunning',    sign: -1 },
+        { trait: 'jealousy',   sign: -1 },
       ],
       global_amplifiers: [
         { key: 'faith.spiritual_comfort', multiplier: 0.30 },
@@ -80,17 +81,17 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Survival',
       weight: 2,
       trait_weights: [
-        { trait: 'endurance',     sign:  1 },
-        { trait: 'resilience',    sign:  1 },
-        { trait: 'survival',      sign:  1 },
-        { trait: 'courage',       sign:  1 },
-        { trait: 'street_smarts', sign:  1 },
-        { trait: 'agility',       sign:  1 },
+        { trait: 'endurance',  sign:  1 },
+        { trait: 'resilience', sign:  1 },
+        { trait: 'agility',    sign:  1 },
+        { trait: 'courage',    sign:  1 },
+        { trait: 'cunning',    sign:  1 },
+        { trait: 'intuition',  sign:  1 },
       ],
       global_amplifiers: [
-        { key: 'scarcity.food_supply',     multiplier: 0.40 },
-        { key: 'scarcity.water_access',    multiplier: 0.30 },
-        { key: 'plague.infection_rate',    multiplier: 0.30 },
+        { key: 'scarcity.food_supply',  multiplier: 0.40 },
+        { key: 'scarcity.water_access', multiplier: 0.30 },
+        { key: 'plague.infection_rate', multiplier: 0.30 },
       ],
     },
 
@@ -99,18 +100,18 @@ export const DEFAULT_RULESET: RulesetDef = {
       label:  'Dominance',
       weight: 2,
       trait_weights: [
-        { trait: 'leadership', sign:  1 },
         { trait: 'ambition',   sign:  1 },
         { trait: 'charisma',   sign:  1 },
-        { trait: 'combat',     sign:  1 },
+        { trait: 'strength',   sign:  1 },
+        { trait: 'willpower',  sign:  1 },
         { trait: 'cunning',    sign:  1 },
-        { trait: 'persuasion', sign:  1 },
         { trait: 'empathy',    sign: -1 },
+        { trait: 'loyalty',    sign: -1 },  // low loyalty enables ruthless play
       ],
       global_amplifiers: [
-        { key: 'tyranny.oppression',      multiplier: 0.30 },
-        { key: 'war.military_strength',   multiplier: 0.20 },
-        { key: 'faith.zealotry',          multiplier: 0.20 },
+        { key: 'tyranny.oppression',    multiplier: 0.30 },
+        { key: 'war.military_strength', multiplier: 0.20 },
+        { key: 'faith.zealotry',        multiplier: 0.20 },
       ],
     },
 
@@ -125,9 +126,9 @@ export const DEFAULT_RULESET: RulesetDef = {
       trait_weights: [
         { trait: 'charisma',     sign:  1 },
         { trait: 'empathy',      sign:  1 },
-        { trait: 'humor',        sign:  1 },
+        { trait: 'loyalty',      sign:  1 },
         { trait: 'ambition',     sign:  1 },
-        { trait: 'honesty',      sign:  1 },
+        { trait: 'willpower',    sign:  1 },
         { trait: 'intelligence', sign:  1, multiplier: 0.5 },
       ],
       global_amplifiers: [
@@ -140,8 +141,9 @@ export const DEFAULT_RULESET: RulesetDef = {
 
   // Ordered highest → lowest. First match wins.
   // Each band has *two* effect packets — subject_effect and antagonist_effect —
-  // so world rules can modify the two sides of an interaction independently
-  // (e.g. high Tyranny: subject gains more, antagonist suffers more).
+  // so world rules can modify the two sides of an interaction independently.
+  // affects_stats entries that match person columns (e.g. current_health) are
+  // applied directly to that column; trait keys go into the JSONB merge.
   outcome_bands: [
     {
       label:     'legendary',
@@ -149,7 +151,7 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  1.0,
       subject_effect: {
         stat_delta:    [25, 40],
-        affects_stats: ['health', 'resilience', 'charisma', 'leadership'],
+        affects_stats: ['current_health', 'resilience', 'charisma', 'ambition'],
         trait_deltas:  { courage: 2, ambition: 1, resilience: 1 },
       },
       antagonist_effect: {
@@ -166,7 +168,7 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.75,
       subject_effect: {
         stat_delta:    [10, 25],
-        affects_stats: ['health', 'resilience', 'charisma'],
+        affects_stats: ['current_health', 'resilience', 'charisma'],
       },
       antagonist_effect: {
         stat_delta:    [-10, -3],
@@ -213,7 +215,7 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.35,
       subject_effect: {
         stat_delta:    [-15, -5],
-        affects_stats: ['resilience', 'health'],
+        affects_stats: ['current_health', 'resilience'],
       },
       antagonist_effect: {
         stat_delta:    [-3, 3],
@@ -229,7 +231,7 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  0.75,
       subject_effect: {
         stat_delta:    [-30, -15],
-        affects_stats: ['health', 'resilience', 'charisma'],
+        affects_stats: ['current_health', 'resilience', 'charisma'],
         trait_deltas:  { courage: -1, resilience: -1 },
       },
       antagonist_effect: {
@@ -246,12 +248,12 @@ export const DEFAULT_RULESET: RulesetDef = {
       magnitude:  1.0,
       subject_effect: {
         stat_delta:    [-60, -30],
-        affects_stats: ['health', 'resilience', 'charisma'],
+        affects_stats: ['current_health', 'resilience', 'charisma'],
         trait_deltas:  { courage: -2, resilience: -2, empathy: -1 },
       },
       antagonist_effect: {
         stat_delta:    [-15, 5],
-        affects_stats: ['charisma', 'honesty'],
+        affects_stats: ['charisma', 'loyalty'],
       },
       can_die:          true,
       creates_memory:   true,
@@ -260,9 +262,9 @@ export const DEFAULT_RULESET: RulesetDef = {
   ],
 
   capability_gates: {
-    found_religion:   { leadership_min: 60, charisma_min: 55 },
-    found_faction:    { leadership_min: 60, charisma_min: 55 },
-    agentic_murder:   { honesty_max: 25, bond_max: 15 },
+    found_religion:   { ambition_min: 60, charisma_min: 55 },
+    found_faction:    { ambition_min: 60, charisma_min: 55 },
+    agentic_murder:   { loyalty_max: 25, bond_max: 15 },
     agentic_marry:    { bond_min: 80 },
     agentic_betray:   { bond_min: 75 },
     agentic_befriend: { bond_min: 55, bond_max: 74 },
@@ -271,9 +273,10 @@ export const DEFAULT_RULESET: RulesetDef = {
 
   // Applied to every living person each tick. Formula per stat:
   //   drift = clamp(base + Σ(global[key] × multiplier), min, max)
+  // 'current_health' applies directly to the column; trait keys hit JSONB.
   passive_drifts: [
     {
-      stat: 'health',
+      stat: 'current_health',
       base:  0,
       inputs: [
         { key: 'plague.infection_rate', multiplier: 0.05 },

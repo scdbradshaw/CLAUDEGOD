@@ -97,6 +97,10 @@ export async function processEconomyTick(
   factionsByPerson: Map<string, Set<string>>,
   worldYear:   number,
   worldId:     string,
+  /** Flat multiplier applied to every job's base_pay. Default 1.0. */
+  jobIncomeMultiplier: number = 1,
+  /** Fraction of gross income deducted as cost of living. Default 0.30 (30%). */
+  colPct: number = 0.30,
 ): Promise<EconomyTickResult> {
 
   // Working copies — money deltas accumulate here before a single bulk UPDATE.
@@ -158,9 +162,17 @@ export async function processEconomyTick(
     const job = JOB_BY_ID.get(person.job_id);
     if (!job) continue;
 
-    const pay = job.base_pay;
+    const pay = Math.round(job.base_pay * jobIncomeMultiplier);
     moneyDelta[person.id] = (moneyDelta[person.id] ?? 0) + pay;
     income_paid += pay;
+  }
+
+  // ── 3b. Cost of living — 30% of gross income, debt allowed ──────────────
+  for (const person of alive) {
+    const earned = moneyDelta[person.id] ?? 0;
+    if (earned <= 0) continue; // unemployed pay nothing
+    const col = Math.floor(earned * colPct);
+    moneyDelta[person.id] = earned - col;
   }
 
   // ── 4. Faction tax (10 % of income, deducted after earning) ─────────────

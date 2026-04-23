@@ -26,6 +26,7 @@ import prisma from '../db/client';
 import {
   PREGNANCY_DURATION_TICKS,
   TRAUMA_ANNUAL_DECAY,
+  JOB_BY_ID,
   type RulesetDef,
 } from '@civ-sim/shared';
 import { withTiming, type PhaseTimings } from '../tick/timing';
@@ -124,12 +125,25 @@ function effectiveTick(yearCount: number, biAnnualIndex: number): number {
 // ── Snapshot writer ───────────────────────────────────────────
 
 async function writeSnapshot(worldId: string, year: number, biAnnualIndex: number): Promise<void> {
-  const [world, population, avgStats, religionRows, factionRows, activeEvents, recentDeaths, infectionCounts] = await Promise.all([
+  const [
+    world,
+    personDetails,
+    religionRows,
+    factionRows,
+    activeEvents,
+    recentDeaths,
+    infectionCounts,
+    mostConnectedRow,
+    activeRuleset,
+  ] = await Promise.all([
     prisma.world.findUniqueOrThrow({ where: { id: worldId } }),
-    prisma.person.count({ where: { world_id: worldId, current_health: { gt: 0 } } }),
-    prisma.person.aggregate({
-      where: { world_id: worldId, current_health: { gt: 0 } },
-      _avg:  { current_health: true, happiness: true, money: true },
+    // Phase 6 extended — one pass pulls every stat we need for the dashboard.
+    prisma.person.findMany({
+      where:  { world_id: worldId, current_health: { gt: 0 } },
+      select: {
+        id: true, name: true, age: true, money: true, job_id: true,
+        happiness: true, trauma_score: true, moral_score: true, current_health: true,
+      },
     }),
     prisma.religion.findMany({
       where:   { world_id: worldId, is_active: true },
@@ -154,7 +168,106 @@ async function writeSnapshot(worldId: string, year: number, biAnnualIndex: numbe
       where:  { event: { world_id: worldId, is_active: true }, status: 'infected' },
       _count: { _all: true },
     }),
+    // Most-connected person (by outgoing inner-circle link count).
+    prisma.$queryRaw<{ owner_id: string; cnt: number }[]>`
+      SELECT l.owner_id, COUNT(*)::int AS cnt
+      FROM inner_circle_links l
+      JOIN persons p ON p.id = l.owner_id
+      WHERE p.world_id = ${worldId}::uuid AND p.current_health > 0
+      GROUP BY l.owner_id
+      ORDER BY cnt DESC
+      LIMIT 1
+    `,
+    prisma.ruleset.findFirst({ where: { is_active: true }, select: { id: true, name: true } }),
   ]);
+
+  const population = personDetails.length;
+
+  // ── Averages (computed in JS from the findMany to avoid a second query) ──
+  let sumHealth = 0, sumHappiness = 0, sumMoney = 0;
+  for (const p of personDetails) { sumHealth += p.current_health; sumHappiness += p.happiness; sumMoney += p.money; }
+  const avgHealth    = population > 0 ? Math.round(sumHealth    / population) : 0;
+  const avgHappiness = population > 0 ? Math.round(sumHappiness / population) : 0;
+  const avgMoney     = population > 0 ? Math.round(sumMoney     / population) : 0;
+
+  // ── Wealth distribution ────────────────────────────────────
+  const sortedByMoney = [...personDetails].sort((a, b) => a.money - b.money);
+  let median = 0;
+  if (population > 0) {
+    median = population % 2
+      ? sortedByMoney[(population - 1) >> 1].money
+      : Math.round((sortedByMoney[population / 2 - 1].money + sortedByMoney[population / 2].money) / 2);
+  }
+  // Gini coefficient: 0 = perfect equality, 1 = one person holds everything.
+  // Standard formula on sorted ascending: G = Σ(2i − n − 1)·xᵢ / (n · Σxᵢ)
+  let gini = 0;
+  if (population > 0 && sumMoney > 0) {
+    let cum = 0;
+    for (let i = 0; i < population; i++) {
+      cum += (2 * (i + 1) - population - 1) * Math.max(0, sortedByMoney[i].money);
+    }
+    gini = Math.max(0, Math.min(1, cum / (population * sumMoney)));
+  }
+  const top1pctCount = population > 0 ? Math.max(1, Math.floor(population * 0.01)) : 0;
+  const top1pctSum   = sortedByMoney.slice(population - top1pctCount).reduce((s, p) => s + p.money, 0);
+  const top1pctShare = sumMoney > 0 ? top1pctSum / sumMoney : 0;
+  const richestRow   = population > 0 ? sortedByMoney[population - 1] : null;
+
+  // ── Employment + avg job pay ───────────────────────────────
+  let employedCount = 0;
+  let totalJobPay   = 0;
+  for (const p of personDetails) {
+    if (!p.job_id) continue;
+    const job = JOB_BY_ID.get(p.job_id);
+    if (!job) continue;
+    employedCount++;
+    totalJobPay += job.base_pay;
+  }
+  const employedPct = population > 0 ? employedCount / population : 0;
+  const avgJobPay   = employedCount > 0 ? Math.round(totalJobPay / employedCount) : 0;
+
+  // ── Age distribution (user-specified buckets) + oldest ─────
+  const buckets = [
+    { label: '0–12',  min: 0,  max: 12,  count: 0 },
+    { label: '13–20', min: 13, max: 20,  count: 0 },
+    { label: '21–35', min: 21, max: 35,  count: 0 },
+    { label: '36–50', min: 36, max: 50,  count: 0 },
+    { label: '51–65', min: 51, max: 65,  count: 0 },
+    { label: '65+',   min: 66, max: 999, count: 0 },
+  ];
+  let oldestP: typeof personDetails[0] | null = null;
+  let newbornCount = 0;
+  for (const p of personDetails) {
+    if (p.age <= 12)      buckets[0].count++;
+    else if (p.age <= 20) buckets[1].count++;
+    else if (p.age <= 35) buckets[2].count++;
+    else if (p.age <= 50) buckets[3].count++;
+    else if (p.age <= 65) buckets[4].count++;
+    else                  buckets[5].count++;
+    if (p.age === 0) newbornCount++;
+    if (!oldestP || p.age > oldestP.age) oldestP = p;
+  }
+
+  // ── Top people (vanity leaderboards) ───────────────────────
+  // Single pass picks a winner for every axis. O(N) with no intermediate sorts.
+  let maxMoneyP: typeof personDetails[0] | null = null;
+  let maxTraumaP: typeof personDetails[0] | null = null;
+  let maxMoralP: typeof personDetails[0] | null = null;
+  let minMoralP: typeof personDetails[0] | null = null;
+  let maxHappyP: typeof personDetails[0] | null = null;
+  let minHappyP: typeof personDetails[0] | null = null;
+  for (const p of personDetails) {
+    if (!maxMoneyP  || p.money        > maxMoneyP.money)         maxMoneyP  = p;
+    if (!maxTraumaP || p.trauma_score > maxTraumaP.trauma_score) maxTraumaP = p;
+    if (!maxMoralP  || p.moral_score  > maxMoralP.moral_score)   maxMoralP  = p;
+    if (!minMoralP  || p.moral_score  < minMoralP.moral_score)   minMoralP  = p;
+    if (!maxHappyP  || p.happiness    > maxHappyP.happiness)     maxHappyP  = p;
+    if (!minHappyP  || p.happiness    < minHappyP.happiness)     minHappyP  = p;
+  }
+  const nameById = new Map(personDetails.map(p => [p.id, p.name]));
+  const topConnected = mostConnectedRow[0]
+    ? { id: mostConnectedRow[0].owner_id, name: nameById.get(mostConnectedRow[0].owner_id) ?? '—', value: Number(mostConnectedRow[0].cnt) }
+    : null;
 
   const relByCount = [...religionRows].sort((a, b) => b.memberships.length - a.memberships.length);
 
@@ -178,9 +291,41 @@ async function writeSnapshot(worldId: string, year: number, biAnnualIndex: numbe
       by_cause: recentDeathsByCause as Record<string, number>,
     },
     averages: {
-      health:    Math.round(avgStats._avg.current_health ?? 0),
-      happiness: Math.round(avgStats._avg.happiness ?? 0),
-      money:     Math.round(avgStats._avg.money ?? 0),
+      health:    avgHealth,
+      happiness: avgHappiness,
+      money:     avgMoney,
+    },
+    // ── Phase 6 extended — dashboard stats ─────────────
+    wealth: {
+      median,
+      gini:           Math.round(gini * 1000) / 1000,
+      top_1pct_share: Math.round(top1pctShare * 1000) / 1000,
+      richest:        richestRow ? { id: richestRow.id, name: richestRow.name, money: richestRow.money } : null,
+    },
+    employment: {
+      employed_count:   employedCount,
+      unemployed_count: population - employedCount,
+      employed_pct:     Math.round(employedPct * 1000) / 1000,
+      avg_job_pay:      avgJobPay,
+    },
+    age_distribution: {
+      buckets,
+      oldest:        oldestP ? { id: oldestP.id, name: oldestP.name, age: oldestP.age } : null,
+      newborn_count: newbornCount,
+    },
+    top_people: {
+      richest:          maxMoneyP  ? { id: maxMoneyP.id,  name: maxMoneyP.name,  value: maxMoneyP.money }                     : null,
+      oldest:           oldestP    ? { id: oldestP.id,    name: oldestP.name,    value: oldestP.age }                         : null,
+      most_connected:   topConnected,
+      most_traumatized: maxTraumaP ? { id: maxTraumaP.id, name: maxTraumaP.name, value: Math.round(maxTraumaP.trauma_score) } : null,
+      most_virtuous:    maxMoralP  ? { id: maxMoralP.id,  name: maxMoralP.name,  value: maxMoralP.moral_score }               : null,
+      most_corrupt:     minMoralP  ? { id: minMoralP.id,  name: minMoralP.name,  value: minMoralP.moral_score }               : null,
+      happiest:         maxHappyP  ? { id: maxHappyP.id,  name: maxHappyP.name,  value: maxHappyP.happiness }                 : null,
+      saddest:          minHappyP  ? { id: minHappyP.id,  name: minHappyP.name,  value: minHappyP.happiness }                 : null,
+    },
+    ruleset: {
+      id:   activeRuleset?.id   ?? null,
+      name: activeRuleset?.name ?? null,
     },
     markets: {
       stable:   { index: world.market_stable_index,  trend: world.market_stable_trend  },
@@ -264,8 +409,8 @@ async function runBiAnnualPhase(
   // 1. Load world + ruleset
   const world = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
   const rulesetRow = await prisma.ruleset.findFirst({ where: { is_active: true } });
-  if (!rulesetRow) throw new Error('No active ruleset');
-  const rules = rulesetRow.rules as unknown as RulesetDef;
+  // Ruleset is optional — without one, the interactions phase is skipped but
+  // economy, market, events, births, and aging all run as normal.
 
   // 2. Load living persons
   const living = await prisma.person.findMany({
@@ -309,22 +454,28 @@ async function runBiAnnualPhase(
     });
   }
 
-  // 5. Resolve interactions
-  const phaseResult = await withTiming(timings, 'resolveInteractions', () =>
-    resolveInteractionsPhase({
-      prisma,
-      rules,
-      living,
-      byId,
-      linksOf,
-      personSnaps,
-      groups,
-      memberships,
-      globalTraits: EMPTY_GLOBAL_TRAITS,
-      traitMults:   EMPTY_TRAIT_MULTS,
-    }),
-  );
-  const { traitDeltas, pendingMemories, pendingJoinsByKey, pendingSpawnsByFounder, pendingPregnanciesByPair } = phaseResult;
+  // 5. Resolve interactions — skipped when no ruleset is active.
+  const phaseResult = rulesetRow
+    ? await withTiming(timings, 'resolveInteractions', () =>
+        resolveInteractionsPhase({
+          prisma,
+          rules: rulesetRow.rules as unknown as RulesetDef,
+          living,
+          byId,
+          linksOf,
+          personSnaps,
+          groups,
+          memberships,
+          globalTraits: EMPTY_GLOBAL_TRAITS,
+          traitMults:   EMPTY_TRAIT_MULTS,
+        }),
+      )
+    : null;
+  const traitDeltas              = phaseResult?.traitDeltas              ?? {};
+  const pendingMemories          = phaseResult?.pendingMemories          ?? [];
+  const pendingJoinsByKey        = phaseResult?.pendingJoinsByKey        ?? new Map();
+  const pendingSpawnsByFounder   = phaseResult?.pendingSpawnsByFounder   ?? new Map();
+  const pendingPregnanciesByPair = phaseResult?.pendingPregnanciesByPair ?? new Map();
 
   // 6. Compute final health + trait updates
   const finalHealth: Record<string, number> = {};
@@ -495,6 +646,8 @@ async function runBiAnnualPhase(
       prisma, economyAlive,
       linksOf as Map<string, { target_id: string; bond_strength: number }[]>,
       memberships.factionsByPerson, currentYear, worldId,
+      (world as any).job_income_multiplier ?? 1,
+      (world as any).col_pct ?? 0.30,
     ),
   );
 
@@ -524,10 +677,10 @@ async function runBiAnnualPhase(
     }),
   );
 
-  // 14. Market update
+  // 14. Market update — capture output and persist new indices + history + highlights
   const freshWorld = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
   const history    = (freshWorld.market_history as unknown as MarketHistoryEntry[]) ?? [];
-  await withTiming(timings, 'updateMarket', () =>
+  const marketResult = await withTiming(timings, 'updateMarket', () =>
     updateThreeMarkets({
       prisma, worldId, tickCount: tickNum,
       stableIndex:        freshWorld.market_stable_index,
@@ -542,6 +695,16 @@ async function runBiAnnualPhase(
       marketHistory:      history,
     }),
   );
+  await prisma.world.update({
+    where: { id: worldId },
+    data: {
+      market_stable_index:   marketResult.stable.newIndex,
+      market_index:          marketResult.standard.newIndex,
+      market_volatile_index: marketResult.volatile.newIndex,
+      market_history:        marketResult.marketHistory as unknown as Prisma.InputJsonValue,
+      market_highlights:     marketResult.highlights   as unknown as Prisma.InputJsonValue,
+    },
+  });
 }
 
 // ── Year-end phase ────────────────────────────────────────────

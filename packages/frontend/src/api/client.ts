@@ -347,6 +347,18 @@ export const api = {
         `/economy/market/${bucket}`,
         { method: 'PATCH', body: JSON.stringify(patch) },
       ),
+
+    setJobMultiplier: (multiplier: number) =>
+      request<{ job_income_multiplier: number }>(
+        '/economy/job-multiplier',
+        { method: 'PATCH', body: JSON.stringify({ multiplier }) },
+      ),
+
+    setColPct: (col_pct: number) =>
+      request<{ col_pct: number }>(
+        '/economy/col-pct',
+        { method: 'PATCH', body: JSON.stringify({ col_pct }) },
+      ),
   },
 
   rip: {
@@ -591,6 +603,37 @@ export interface SnapshotActiveEvent {
   };
 }
 
+// Phase 6 extended — dashboard stats written by the pipeline snapshot writer.
+export interface TopPersonRef { id: string; name: string; value: number }
+export interface AgeBucket    { label: string; min: number; max: number; count: number }
+export interface SnapshotWealth {
+  median:         number;
+  gini:           number;          // 0–1
+  top_1pct_share: number;          // 0–1
+  richest:        { id: string; name: string; money: number } | null;
+}
+export interface SnapshotEmployment {
+  employed_count:   number;
+  unemployed_count: number;
+  employed_pct:     number;        // 0–1
+  avg_job_pay:      number;
+}
+export interface SnapshotAgeDistribution {
+  buckets:       AgeBucket[];
+  oldest:        { id: string; name: string; age: number } | null;
+  newborn_count: number;
+}
+export interface SnapshotTopPeople {
+  richest:          TopPersonRef | null;
+  oldest:           TopPersonRef | null;
+  most_connected:   TopPersonRef | null;
+  most_traumatized: TopPersonRef | null;
+  most_virtuous:    TopPersonRef | null;
+  most_corrupt:     TopPersonRef | null;
+  happiest:         TopPersonRef | null;
+  saddest:          TopPersonRef | null;
+}
+
 export interface WorldSnapshot {
   // Pipeline-bound fields (snapshot-time)
   year:               number;
@@ -605,9 +648,18 @@ export interface WorldSnapshot {
   active_events:      SnapshotActiveEvent[];
   snapshot_at:        string | null;
 
+  // Phase 6 extended — may be missing on pre-upgrade snapshots.
+  wealth?:            SnapshotWealth;
+  employment?:        SnapshotEmployment;
+  age_distribution?:  SnapshotAgeDistribution;
+  top_people?:        SnapshotTopPeople;
+  ruleset?:           { id: string | null; name: string | null };
+
   // World-level live fields (refreshed on every read)
   current_year: number;
   year_count:   number;
+  /** Duration of the most recently completed year-run in milliseconds, or null. */
+  last_tick_ms: number | null;
 
   // ── Legacy flat fields (always emitted by /api/world for back-compat) ──
   market_index:          number;

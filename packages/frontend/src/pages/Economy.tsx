@@ -180,7 +180,7 @@ function MarketCard({
   bucket, label, tagline, index, trend, volatility, memberCount, highlight, color, chartPoints, onPatch, pending,
 }: MarketCardProps) {
   const trendUp  = trend >= 0;
-  const lastGain = highlight?.gain_per_person ?? null;
+  const lastGain = highlight?.return_pct ?? null;
   const gainUp   = lastGain !== null && lastGain >= 0;
 
   return (
@@ -216,7 +216,7 @@ function MarketCard({
           <div className="label text-[9px] mb-0.5">Last tick</div>
           {lastGain !== null ? (
             <div className={`text-xs font-medium ${gainUp ? 'text-emerald-400' : 'text-red-400'}`}>
-              {gainUp ? '+' : ''}{lastGain.toLocaleString()}
+              {gainUp ? '+' : ''}{lastGain.toFixed(1)}%
             </div>
           ) : (
             <div className="text-xs text-muted">—</div>
@@ -306,7 +306,7 @@ function HighlightsStrip({ highlights }: { highlights: MarketHighlights | Record
             <div className="text-[11px] text-muted capitalize">
               {h.top_gainer.market} market
               <span className="text-emerald-400 ml-1 font-medium">
-                +{h.top_gainer.gain.toLocaleString()}
+                +{h.top_gainer.return_pct.toFixed(1)}%
               </span>
             </div>
           </>
@@ -322,7 +322,7 @@ function HighlightsStrip({ highlights }: { highlights: MarketHighlights | Record
             <div className="text-[11px] text-muted capitalize">
               {h.top_loser.market} market
               <span className="text-red-400 ml-1 font-medium">
-                {h.top_loser.gain.toLocaleString()}
+                {h.top_loser.return_pct.toFixed(1)}%
               </span>
             </div>
           </>
@@ -372,6 +372,16 @@ export default function Economy() {
   const patch = useMutation({
     mutationFn: ({ bucket, body }: { bucket: Bucket; body: { trend?: number; volatility?: number; index?: number } }) =>
       api.economy.patchMarket(bucket, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['economy'] }),
+  });
+
+  const [multiplierInput, setMultiplierInput] = useState<string>('');
+  useEffect(() => {
+    if (data) setMultiplierInput(String(data.job_income_multiplier ?? 1));
+  }, [data?.job_income_multiplier]);
+
+  const setMultiplier = useMutation({
+    mutationFn: (m: number) => api.economy.setJobMultiplier(m),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['economy'] }),
   });
 
@@ -453,11 +463,45 @@ export default function Economy() {
         <HighlightsStrip highlights={highlights} />
       </div>
 
-      {/* ── Income note ── */}
-      <div className="panel p-3 text-[10px] text-muted border border-amber-900/30">
-        <span className="text-amber-400/80 font-medium">Income model (placeholder):</span>{' '}
-        Each soul earns <span className="text-zinc-300">20,000 / year</span> — 80% direct wages, 20% auto-invested in their assigned market.
-        Assignment is trait-driven: high intelligence + high cunning → riskAwin; high intelligence → trusUS; everyone else → dreamBIG.
+      {/* ── Job income + cost of living ── */}
+      <div className="panel p-4 space-y-4 border border-amber-900/30">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-medium text-amber-400">Job Income Multiplier</div>
+            <div className="text-[10px] text-muted mt-0.5">
+              Scales every job's base pay each tick. CEO base: 1,000 · at 100× = 100,000/tick.
+            </div>
+            <div className="text-[10px] text-muted mt-0.5">
+              <span className="text-amber-300/80">Cost of living:</span> 30% auto-deducted from gross income each tick — debt allowed.
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="number"
+              min={0.1}
+              max={10000}
+              step={1}
+              value={multiplierInput}
+              onChange={e => setMultiplierInput(e.target.value)}
+              className="w-24 bg-zinc-800 border border-zinc-600 rounded px-2 py-1 text-sm
+                         text-zinc-100 tabular-nums focus:outline-none focus:border-amber-500"
+            />
+            <button
+              onClick={() => {
+                const v = parseFloat(multiplierInput);
+                if (Number.isFinite(v) && v >= 0.1) setMultiplier.mutate(v);
+              }}
+              disabled={setMultiplier.isPending}
+              className="btn-sim px-3 py-1.5 text-[11px] disabled:opacity-40"
+            >
+              Apply
+            </button>
+          </div>
+        </div>
+        <div className="text-[10px] text-muted border-t border-border/40 pt-3">
+          Current: <span className="text-zinc-300 font-medium tabular-nums">{data.job_income_multiplier ?? 1}×</span>
+          {' · '}Market returns are proportional to each soul's wealth (10% at risk per tick).
+        </div>
       </div>
 
       {/* ── Stats strip ── */}

@@ -467,6 +467,10 @@ export interface EconomyState {
   global_trait_multipliers: Record<string, number>;
   /** Current world global trait child values e.g. { "war.morale": 20 } */
   global_traits:            Record<string, number>;
+  /** Multiplier applied to every job's base_pay each tick. Default 1.0. */
+  job_income_multiplier:    number;
+  /** Fraction of gross income deducted as cost of living each tick. 0.30 = 30%. */
+  col_pct:                  number;
 }
 
 // --------------- City (Phase 7) ---------------

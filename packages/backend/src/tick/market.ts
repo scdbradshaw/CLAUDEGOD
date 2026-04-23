@@ -8,14 +8,11 @@
 //
 // Every tick:
 //   1. Compute a random return per market (trend + noise + mean-reversion).
-//   2. Apply flat 20k income to all living persons; 20% (4k) is treated
-//      as invested in their market bucket and earns/loses accordingly.
-//      Net wealth change = 16000 + 4000*(1+R) = 20000 + 4000*R
+//   2. Apply proportional market returns: each person's wealth grows/shrinks
+//      by MARKET_INVEST_RATE * their market bucket's return. Persons with
+//      no money neither gain nor lose (prevents zero-sum spiral for paupers).
 //   3. Detect extreme events (crash/boom/bubble/depression) per market.
 //   4. Return per-market results + highlights for the tick response.
-//
-// NOTE: the base income of 20,000 per tick is a placeholder — will be
-// replaced with a more nuanced income model in a future round.
 // ============================================================
 
 import type { PrismaClient } from '@prisma/client';
@@ -35,10 +32,8 @@ export const MARKET_BUBBLE_INDEX   =  1.6;
 /** Market index below this is a depression floor; persists until reversion pulls it up. */
 export const MARKET_DEPRESSION_INDEX = 0.5;
 
-// Income / investment constants (placeholder — will be refined later)
-const BASE_INCOME    = 20_000;
-const INVEST_RATE    = 0.20;
-const INVEST_AMOUNT  = BASE_INCOME * INVEST_RATE; // 4000 per tick
+/** Fraction of each person's current wealth that is "in the market" each tick. */
+const MARKET_INVEST_RATE = 0.10;
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -60,22 +55,22 @@ export interface MarketBucketResult {
 
 export interface MarketHighlights {
   stable: {
-    return_pct:      number;
-    gain_per_person: number;  // 4000 * R, can be negative
-    member_count:    number;
+    return_pct:   number;
+    invest_rate:  number;  // fraction of wealth at risk (MARKET_INVEST_RATE)
+    member_count: number;
   };
   standard: {
-    return_pct:      number;
-    gain_per_person: number;
-    member_count:    number;
+    return_pct:   number;
+    invest_rate:  number;
+    member_count: number;
   };
   volatile: {
-    return_pct:      number;
-    gain_per_person: number;
-    member_count:    number;
+    return_pct:   number;
+    invest_rate:  number;
+    member_count: number;
   };
-  top_gainer: { name: string; market: string; gain: number } | null;
-  top_loser:  { name: string; market: string; gain: number } | null;
+  top_gainer: { name: string; market: string; return_pct: number } | null;
+  top_loser:  { name: string; market: string; return_pct: number } | null;
 }
 
 export interface MarketHistoryEntry {
@@ -150,18 +145,20 @@ export async function updateThreeMarkets(
   const stR = standard.marketReturn;
   const vR  = volatile_.marketReturn;
 
-  // 2. Apply income + investment in one SQL pass.
-  //    Net change = 16000 (wages) + 4000*(1+R) (invested capital + return)
-  //               = 20000 + 4000*R
+  // 2. Apply proportional market returns in one SQL pass.
+  //    Each person earns/loses MARKET_INVEST_RATE * their_money * bucket_return.
+  //    Persons with money <= 0 are unaffected (no leverage on debt).
   await prisma.$executeRaw`
     UPDATE persons SET
-      money = money
-               + ${BASE_INCOME}::int
-               + ROUND(${INVEST_AMOUNT}::float * CASE market_bucket
-                   WHEN 'stable'   THEN ${sR}::float
-                   WHEN 'volatile' THEN ${vR}::float
-                   ELSE                 ${stR}::float
-                 END)::int,
+      money = money + ROUND(
+                GREATEST(money, 0)::float
+                * ${MARKET_INVEST_RATE}::float
+                * CASE market_bucket
+                    WHEN 'stable'   THEN ${sR}::float
+                    WHEN 'volatile' THEN ${vR}::float
+                    ELSE                 ${stR}::float
+                  END
+              )::int,
       updated_at = NOW()
     WHERE world_id = ${worldId}::uuid AND current_health > 0
   `;
@@ -192,34 +189,32 @@ export async function updateThreeMarkets(
     { key: 'volatile', R: vR  },
   ] as const;
 
-  const gainPerPerson = (R: number) => Math.round(INVEST_AMOUNT * R);
-
   const best  = buckets.reduce((a, b) => b.R > a.R ? b : a);
   const worst = buckets.reduce((a, b) => b.R < a.R ? b : a);
 
   const highlights: MarketHighlights = {
     stable: {
-      return_pct:      round1(sR),
-      gain_per_person: gainPerPerson(sR),
-      member_count:    counts['stable'] ?? 0,
+      return_pct:   round1(sR),
+      invest_rate:  MARKET_INVEST_RATE,
+      member_count: counts['stable'] ?? 0,
     },
     standard: {
-      return_pct:      round1(stR),
-      gain_per_person: gainPerPerson(stR),
-      member_count:    counts['standard'] ?? 0,
+      return_pct:   round1(stR),
+      invest_rate:  MARKET_INVEST_RATE,
+      member_count: counts['standard'] ?? 0,
     },
     volatile: {
-      return_pct:      round1(vR),
-      gain_per_person: gainPerPerson(vR),
-      member_count:    counts['volatile'] ?? 0,
+      return_pct:   round1(vR),
+      invest_rate:  MARKET_INVEST_RATE,
+      member_count: counts['volatile'] ?? 0,
     },
     top_gainer:
       best.R > 0
-        ? { name: samples[best.key] ?? '—', market: best.key, gain: gainPerPerson(best.R) }
+        ? { name: samples[best.key] ?? '—', market: best.key, return_pct: round1(best.R) }
         : null,
     top_loser:
       worst.R < 0
-        ? { name: samples[worst.key] ?? '—', market: worst.key, gain: gainPerPerson(worst.R) }
+        ? { name: samples[worst.key] ?? '—', market: worst.key, return_pct: round1(worst.R) }
         : null,
   };
 

@@ -58,6 +58,8 @@ router.get('/', async (_req: Request, res: Response) => {
     current_year:             world.current_year,
     global_trait_multipliers: multipliers,
     global_traits:            globalTraits,
+    job_income_multiplier:    (world as any).job_income_multiplier ?? 1,
+    col_pct:                  (world as any).col_pct ?? 0.30,
   });
 });
 
@@ -258,6 +260,44 @@ router.patch('/global-traits', async (req: Request, res: Response) => {
   });
 
   res.json({ global_traits: updated.global_traits });
+});
+
+// ── PATCH /api/economy/col-pct ──────────────────────────────
+// Sets the cost-of-living fraction. Clamped to [0, 2.0] (0–200%).
+router.patch('/col-pct', async (req: Request, res: Response) => {
+  const { col_pct } = req.body as { col_pct: number };
+  if (typeof col_pct !== 'number' || !Number.isFinite(col_pct) || col_pct < 0) {
+    res.status(400).json({ error: 'col_pct must be a finite number >= 0' });
+    return;
+  }
+
+  const clamped = Math.max(0, Math.min(2.0, col_pct));
+  const world   = await getActiveWorld();
+  await prisma.world.update({
+    where: { id: world.id },
+    data:  { col_pct: clamped } as any,
+  });
+
+  res.json({ col_pct: clamped });
+});
+
+// ── PATCH /api/economy/job-multiplier ───────────────────────
+// Sets the job income multiplier. Clamped to [0.1, 10000].
+router.patch('/job-multiplier', async (req: Request, res: Response) => {
+  const { multiplier } = req.body as { multiplier: number };
+  if (typeof multiplier !== 'number' || !Number.isFinite(multiplier) || multiplier < 0.1) {
+    res.status(400).json({ error: 'multiplier must be a finite number >= 0.1' });
+    return;
+  }
+
+  const clamped = Math.max(0.1, Math.min(10_000, multiplier));
+  const world   = await getActiveWorld();
+  await prisma.world.update({
+    where: { id: world.id },
+    data:  { job_income_multiplier: clamped } as any,
+  });
+
+  res.json({ job_income_multiplier: clamped });
 });
 
 export default router;

@@ -16,6 +16,9 @@ import { getActiveWorld } from '../services/time.service';
 
 const router = Router();
 
+interface TopPersonRef  { id: string; name: string; value: number }
+interface AgeBucket     { label: string; min: number; max: number; count: number }
+
 interface SnapshotPayload {
   year:               number;
   bi_annual_index:    number;
@@ -27,6 +30,38 @@ interface SnapshotPayload {
     stable:   { index: number; trend: number };
     standard: { index: number; trend: number };
     volatile: { index: number; trend: number };
+  };
+  // Phase 6 extended — may be absent on legacy snapshots; fallback synthesizes empties.
+  wealth?: {
+    median:         number;
+    gini:           number;
+    top_1pct_share: number;
+    richest:        { id: string; name: string; money: number } | null;
+  };
+  employment?: {
+    employed_count:   number;
+    unemployed_count: number;
+    employed_pct:     number;
+    avg_job_pay:      number;
+  };
+  age_distribution?: {
+    buckets:       AgeBucket[];
+    oldest:        { id: string; name: string; age: number } | null;
+    newborn_count: number;
+  };
+  top_people?: {
+    richest:          TopPersonRef | null;
+    oldest:           TopPersonRef | null;
+    most_connected:   TopPersonRef | null;
+    most_traumatized: TopPersonRef | null;
+    most_virtuous:    TopPersonRef | null;
+    most_corrupt:     TopPersonRef | null;
+    happiest:         TopPersonRef | null;
+    saddest:          TopPersonRef | null;
+  };
+  ruleset?: {
+    id:   string | null;
+    name: string | null;
   };
   religions:     unknown;
   factions:      unknown;
@@ -55,9 +90,19 @@ function withLegacyFlatFields(payload: SnapshotPayload) {
 router.get('/', async (_req: Request, res: Response) => {
   const world = await getActiveWorld();
 
-  const snapshot = await prisma.worldSnapshot.findUnique({
-    where: { world_id: world.id },
-  });
+  // Run snapshot read + last-tick lookup in parallel. last_tick_ms comes from
+  // the most recent completed YearRun row; stays null on a fresh world.
+  const [snapshot, lastYearRun] = await Promise.all([
+    prisma.worldSnapshot.findUnique({ where: { world_id: world.id } }),
+    prisma.yearRun.findFirst({
+      where:   { world_id: world.id, status: 'completed' },
+      orderBy: { completed_at: 'desc' },
+      select:  { started_at: true, completed_at: true },
+    }),
+  ]);
+  const lastTickMs = lastYearRun?.completed_at
+    ? lastYearRun.completed_at.getTime() - lastYearRun.started_at.getTime()
+    : null;
 
   if (snapshot) {
     const payload = snapshot.payload as unknown as SnapshotPayload;
@@ -68,6 +113,7 @@ router.get('/', async (_req: Request, res: Response) => {
       current_year: world.current_year,
       year_count:   world.year_count,
       snapshot_at:  snapshot.updated_at,
+      last_tick_ms: lastTickMs,
     });
     return;
   }
@@ -97,6 +143,7 @@ router.get('/', async (_req: Request, res: Response) => {
     current_year: world.current_year,
     year_count:   world.year_count,
     snapshot_at:  null,
+    last_tick_ms: lastTickMs,
   });
 });
 

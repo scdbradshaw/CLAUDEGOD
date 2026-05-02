@@ -1,6 +1,19 @@
-// ============================================================
-// PRISMA SCHEMA — Civilization Simulation
-// ============================================================
+// CLAUDE GOD — Prisma schema (Phase 1).
+//
+// Mirrors DESIGN.md sections:
+//   §3.1, §13   World, City
+//   §5          Person (real-person schema)
+//   §5.4        LifeDecadeSummary
+//   §5.5        Relationship
+//   §6.4        World.market_index (global market)
+//   §8.1        Group (factions + religions, single table)
+//   §9.4        WorldEvent (active + archived)
+//   §10         BiographyArchive
+//   §12         Bucket
+//   §15.2.1     YearRun (with random_seed for replay)
+//
+// Enums must mirror the unions in `packages/shared/src/types.ts`.
+// The phase-1 roundtrip test guards parity.
 
 generator client {
   provider = "prisma-client-js"
@@ -11,920 +24,429 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// --------------- Enums ---------------
+// ─── Enums ───────────────────────────────────────────────────────────────────
 
-enum Sexuality {
-  HETEROSEXUAL
-  HOMOSEXUAL
-  BISEXUAL
-  ASEXUAL
-  PANSEXUAL
-  OTHER
+enum PersonType {
+  Farmer
+  Laborer
+  Artisan
+  Merchant
+  Soldier
+  Priest
+  Scholar
+  Noble
+  Outlaw
+  Healer
 }
 
-enum EmotionalImpact {
-  traumatic
-  negative
-  neutral
-  positive
-  euphoric
+// Race is stored as String (not enum) because mixed races are
+// "{race_a}-{race_b}" composites. Validation happens in shared types.
+
+enum RegionResource {
+  farmland
+  coast
+  mountains
+  forest
+  desert
+  crossroads
 }
 
-enum HeadlineCategory {
-  MOST_DRAMATIC_FALL
-  MOST_INSPIRING_RISE
-  GREATEST_VILLAIN
-  MOST_TRAGIC
-  BEST_LOVE_STORY
-  MOST_CRIMINAL
-  RAGS_TO_RICHES
-  RICHES_TO_RAGS
-  MOST_INFLUENTIAL
-  LONGEST_SURVIVING
+enum GroupKind {
+  faction
+  religion
 }
 
-enum HeadlineType {
-  ANNUAL
-  DECADE
+enum EventType {
+  Plague
+  Famine
+  Fire
+  Drought
+  FactionWar
+  CityRevolt
+  Siege
+  ReligiousSchism
+  GoldenAge
+  BountifulHarvest
+  Discovery
+  GreatCrash
 }
 
-enum InnerCircleRelation {
-  parent
-  child
-  sibling
-  spouse
-  lover
-  close_friend
-  rival
-  enemy
+enum EventEndReason {
+  expired
+  manual
+  condition_met
+  overridden
 }
 
-enum GroupOrigin {
-  emergent
-  player
+enum DeathCause {
+  old_age
+  health
   event
+  interaction
+  accident
 }
 
-// Job lifecycle for the Postgres-as-queue tick runner. Enqueued jobs are
-// claimed with an advisory lock; only one worker progresses a job at a time.
-enum JobStatus {
+enum YearRunStatus {
   pending
   running
-  done
+  completed
   failed
 }
 
-// Scope tag for WorldMemory / GroupMemory reads. Not persisted as a column;
-// kept here for type-level symmetry with MemoryBank's per-person scope.
-enum MemoryScope {
-  religion
-  faction
-}
-
-enum PopulationTier {
-  intimate      // 100–500
-  town          // 500–5,000
-  civilization  // 5,000–50,000
-}
-
-// Voice routing for Claude narration. Determines the voice prefix
-// injected into headline / memory / decade prompts.
-//   tabloid   — scandals, rises/falls, affairs, forced interactions
-//   literary  — deaths, births, quiet beats, natural old-age passing
-//   epic      — group founded/dissolved/split, decade summaries
-//   reportage — bulk chaos (plague, nukes, bulk God Mode filter actions)
-//   neutral   — fallback; terse factual for low-magnitude routine events
-enum Tone {
-  tabloid
-  literary
-  epic
-  reportage
-  neutral
-}
-
-// --------------- World ---------------
-// Replaces the singleton WorldState. Each World is a fully isolated
-// state: its own population, groups, headlines, and economy.
+// ─── World ───────────────────────────────────────────────────────────────────
 
 model World {
-  id          String    @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
-  is_active   Boolean   @default(false)
-  archived_at DateTime?
+  id                            String   @id @default(uuid())
+  name                          String
+  current_year                  Int      @default(0)
 
-  population_tier PopulationTier @default(intimate)
+  // §6.4 — global market
+  market_index                  Float    @default(1.0)
+  market_trend                  Float    @default(0.0)
 
-  /// The ruleset driving this world's interactions. Nullable so a world
-  /// can exist before a ruleset is chosen (picked at creation time in UI).
-  ruleset    Ruleset? @relation(fields: [ruleset_id], references: [id], onDelete: SetNull)
-  ruleset_id String?  @db.Uuid
+  // §15.2.1 — root seed for deterministic year runs
+  random_seed_root              BigInt
 
-  // ── Operational state (was WorldState) ──────────────────────
-  current_year              Int    @default(1)
-  /// Years elapsed in this world. Incremented once per year-end phase by the async pipeline.
-  year_count                Int    @default(0)
-  /// 0 = bi-annual A just ran, 1 = bi-annual B just ran. Resets to 0 on year-end.
-  bi_annual_index           Int    @default(0)
-  total_deaths              Int    @default(0)
-  /// Standard (index) market — used as the default wealth-drift baseline.
-  market_index              Float  @default(1.0)
-  market_trend              Float  @default(0.018)
-  market_volatility         Float  @default(0.05)
-  /// Stable (bonds) market — low volatility, steady long-term upside.
-  market_stable_index       Float  @default(1.0)
-  market_stable_trend       Float  @default(0.012)
-  market_stable_volatility  Float  @default(0.015)
-  /// Volatile (speculative) market — high risk, high reward.
-  market_volatile_index     Float  @default(1.0)
-  market_volatile_trend     Float  @default(0.04)
-  market_volatile_volatility Float @default(0.20)
-  /// Rolling last-100-tick history: [{tick, stable, standard, volatile}]
-  market_history            Json   @default("[]")
-  /// Last-tick market highlights: gains/losses per bucket + top gainer/loser names
-  market_highlights         Json   @default("{}")
-  /// Flat map of all global trait child values  e.g. { "war.morale": 20 }
-  global_traits             Json   @default("{}")
-  /// Per-force effect multipliers e.g. { "war": 1.5 }
-  global_trait_multipliers  Json   @default("{}")
-  /// Which 5 trait categories are active/shown in UI
-  active_trait_categories   Json   @default("[]")
-  /// Flat multiplier applied to every job's base_pay each bi-annual tick.
-  /// At 1.0 a King earns 220/tick; at 500 a King earns 110,000/tick.
-  job_income_multiplier     Float  @default(1.0)
-  /// Fraction of gross income deducted as cost of living each tick. 0.30 = 30%.
-  /// Range [0, 2.0]. Can exceed 1.0 (punishing economy mode).
-  col_pct                   Float  @default(0.30)
+  // §14.5 — opt-in flag; default OFF
+  prejudice_against_same_sex    Boolean  @default(false)
 
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  // §9.3 — short ring buffer (last 3 years) of per-city snapshots used by
+  // cascade-trigger evaluation. Shape: WorldStateSnapshot[] (shared types).
+  state_history                 Json     @default("[]")
 
-  // ── Per-world entity sets ────────────────────────────────────
-  persons        Person[]
-  religions      Religion[]
-  factions       Faction[]
-  deceased       DeceasedPerson[]
-  world_events   WorldEvent[]
-  headlines      YearlyHeadline[]
-  world_memories WorldMemory[]
-  tick_jobs      TickJob[]
-  yearly_reports YearlyReport[]
-  pregnancies    Pregnancy[]
-  city           City?
-  year_runs      YearRun[]
-  snapshot       WorldSnapshot?
-  event_history  EventHistory[]
+  // §16.1.2 — last-100-year market index history for the WorldMap chart.
+  // Shape: { year: number, market_index: number }[]
+  market_index_history          Json     @default("[]")
 
-  @@index([is_active])
-  @@map("worlds")
+  // §6.4 v2 — last-100-year stock-market class-signals history. Powers the
+  // Market page charts (food ratio, class deltas, per-class pop/wealth).
+  // Shape: MarketSignalsEntry[] (shared types).
+  market_signals_history        Json     @default("[]")
+
+  created_at                    DateTime @default(now())
+
+  cities       City[]
+  people       Person[]
+  groups       Group[]
+  events       WorldEvent[]
+  year_runs    YearRun[]
+  archives     BiographyArchive[]
 }
 
-// --------------- City ---------------
-// Phase 7: single-city container for every world. Future-proofs geography
-// without committing to multi-city yet — one row per world, enforced via
-// @@unique(world_id). Adding multi-city later means dropping the unique
-// and backfilling a city_id column on Person/DeceasedPerson.
+// ─── City (§13) ──────────────────────────────────────────────────────────────
+
 model City {
-  id          String  @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
-  founded_year Int    @default(1)
+  id                    String          @id @default(uuid())
+  world_id              String
+  name                  String
+  x                     Float
+  y                     Float
+  founded_year          Int
+  is_ruined             Boolean         @default(false)
 
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @unique @db.Uuid
+  // Snapshot rollups (year-end refresh)
+  population_total      Int             @default(0)
+  avg_wealth            Int             @default(0)
+  mood_score            Float           @default(50)
+  dominant_faction_id   String?
+  dominant_religion_id  String?
 
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  // Permanent identity
+  region_resource       RegionResource
 
-  @@map("cities")
+  // Governance
+  defense_rating        Int             @default(50)
+  treasury              Int             @default(0)
+  mayor_id              String?
+  tax_rate              Int             @default(10)         // 0–50 slider
+  garrison_size         Int             @default(0)
+
+  // Race relations — field exists, mechanic deferred to v1.1 (§14.3)
+  prejudice_level       Int             @default(0)
+
+  world                 World           @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  buckets               Bucket[]
+  people                Person[]
+
+  @@index([world_id])
 }
 
-// --------------- Person ---------------
+// ─── Bucket (§12) ────────────────────────────────────────────────────────────
+// Composite primary key (city_id, type). One row per (city × type).
+
+model Bucket {
+  city_id                  String
+  type                     PersonType
+  count                    Int        @default(0)
+
+  // Demographics
+  avg_age                  Float      @default(30)
+  birth_rate               Float      @default(0.02)
+  death_rate               Float      @default(0.018)
+  race_shares              Json       @default("{}")
+
+  // Stat averages (mirror Person numeric fields)
+  avg_wealth               Int        @default(0)
+  avg_intelligence         Float      @default(50)
+  avg_combat               Float      @default(50)
+  avg_health               Float      @default(80)
+  avg_happiness            Float      @default(50)
+  avg_sexuality            Float      @default(70)
+
+  // Group affiliations (cap 5 entries each by convention)
+  religion_shares          Json       @default("{}")
+  faction_shares           Json       @default("{}")
+
+  // Tag frequencies
+  personality_tag_freqs    Json       @default("{}")
+  state_tag_freqs          Json       @default("{}")
+
+  city                     City       @relation(fields: [city_id], references: [id], onDelete: Cascade)
+
+  @@id([city_id, type])
+}
+
+// ─── Person (§5) ─────────────────────────────────────────────────────────────
 
 model Person {
-  id   String @id @default(uuid()) @db.Uuid
-  name String
+  id                String   @id @default(uuid())
+  world_id          String
+  city_id           String
+  type              PersonType
+  faction_id          String?
+  religion_id         String?
+  faction_joined_year Int?
+  religion_joined_year Int?
 
-  // ── Demographic ──────────────────────────────────────────
-  sexuality  Sexuality
-  gender     String
-  race       String
-  occupation String    @default("commoner")
-  age        Int
-  /// Age at which natural death occurs — rolled from race lifespan at birth
-  death_age  Int       @default(80)
+  // Identity
+  name              String
+  age               Int
+  gender            String                       // 'male' | 'female' | 'nonbinary'
+  race              String                       // Race or `${Race}-${Race}` mixed
+  sexuality         Int                          // 0=fully gay, 100=fully straight
+  is_alive          Boolean   @default(true)
+  death_year        Int?
+  death_cause       DeathCause?
+  created_year      Int
 
-  // ── Social ───────────────────────────────────────────────
-  relationship_status String
-  religion            String
-  /// JSONB array of CriminalRecord objects
-  criminal_record     Json   @default("[]")
+  // Stats
+  combat            Int       @default(50)
+  intelligence      Int       @default(50)
+  happiness         Int       @default(50)
+  wealth            Int       @default(0)
+  current_health    Int       @default(100)
 
-  // ── Combat stats (derived each tick from BODY traits + MIND amplifier) ──
-  /// Ceiling for current_health. Set by endurance. 0–100.
-  max_health     Int @default(100)
-  /// Health pool — drops in altercations, recovers per tick based on resilience.
-  /// 0 = dead. Kept as a column so SQL WHERE current_health > 0 uses the index.
-  current_health Int @default(100)
-  /// Derived from strength. 0–100.
-  attack         Int @default(50)
-  /// Derived from endurance blend. 0–100.
-  defense        Int @default(50)
-  /// Derived from agility. 0–100.
-  speed          Int @default(50)
+  // Tags (jsonb arrays — string[] of PersonalityTag, { tag, set_year }[] of StateTag)
+  personality_tags  Json      @default("[]")
+  state_tags        Json      @default("[]")
 
-  // ── Trauma (Round 3) ─────────────────────────────────────
-  /// Emotional scar tissue accumulated from negative memory writes and
-  /// decayed annually on the year-boundary tick. Affects interaction
-  /// scoring as a flat subtrahend — a traumatized person's world darkens.
-  /// 0-100. Stored as a column (not JSONB) so bulk decay is one UPDATE.
-  trauma_score Float @default(0)
+  // Memory + queued actions (§5.4, §11.4)
+  recent_memories   Json      @default("[]")
+  action_queue      Json      @default("[]")
 
-  // ── Other ────────────────────────────────────────────────
-  physical_appearance String
-  /// Happiness pool 0-100. Drifts toward 50 each tick. Affected by events.
-  happiness           Int     @default(50)
-  /// Phase 1 — lazy happiness drift base value. effectiveHappiness helper not yet built (see DESIGN §0.5 Phase 3).
-  happiness_base      Int     @default(50)
-  /// Effective tick (year_count * 2 + bi_annual_index) at which happiness_base was last set.
-  happiness_set_tick  Int     @default(0)
-  /// Effective tick (year_count * 2 + bi_annual_index) at which trauma_score was last set. Used for lazy decay computation.
-  trauma_set_tick     Int     @default(0)
-  /// Job id key from the static ALL_JOBS list (e.g. 'blacksmith'). Null = unemployed.
-  job_id              String?
-  /// Current money (integer). Renamed from `wealth`.
-  money               Int    @default(0)
-  /// Amount of money currently invested in this person's market bucket.
-  money_invested      Int    @default(0)
-  /// −100–100. Positive = virtuous, negative = corrupt/criminal.
-  moral_score         Int    @default(0)
-  /// Which of the three markets this person invests in. Assigned at creation
-  /// based on intelligence + cunning traits. 'stable' | 'standard' | 'volatile'
-  market_bucket       String @default("standard")
-  /// JSONB map of the 4 meta trait categories: body, mind, heart, drive.
-  /// Each category holds 4 traits scored 0–100 (neutral = 50).
-  /// Shape: { body: { strength, endurance, agility, resilience },
-  ///          mind: { intelligence, willpower, intuition, creativity },
-  ///          heart: { charisma, empathy, loyalty, jealousy },
-  ///          drive: { ambition, courage, discipline, cunning } }
-  traits              Json   @default("{}")
-  /// JSONB map of personal global force scores e.g. { "war.morale": 45 }
-  global_scores       Json   @default("{}")
+  // Kin
+  spouse_id         String?
+  mother_id         String?
+  father_id         String?
 
-  // ── World ────────────────────────────────────────────────
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
+  // Player control + churn bookkeeping
+  is_pinned         Boolean   @default(false)
+  last_event_year   Int?                          // for §4.3 demotion-grace check
 
-  // ── Genealogy (Round 2 — Births) ─────────────────────────
-  /// One of the two biological parents. Null for seed / player-injected people.
-  parent_a_id String? @db.Uuid
-  parent_b_id String? @db.Uuid
-  parent_a    Person? @relation("ParentA", fields: [parent_a_id], references: [id], onDelete: SetNull)
-  parent_b    Person? @relation("ParentB", fields: [parent_b_id], references: [id], onDelete: SetNull)
+  // §6.3 dues — consecutive missed-payment counters; reset on payment.
+  // Reaching DUES_KICK_AFTER_MISSES expels the member from the group
+  // (factions only; religions don't kick the broke).
+  dues_missed_faction   Int   @default(0)
+  dues_missed_religion  Int   @default(0)
 
-  // ── Timestamps ───────────────────────────────────────────
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
+  // §8.3 — consecutive years a religious member has had ZERO matching tags
+  // with their religion's wanted_tags. At ≥5 they leave (auto-purge).
+  unmatched_religion_years Int @default(0)
+  // Same mechanic for factions — see `runUnmatchedTagPurgeTx`.
+  unmatched_faction_years  Int @default(0)
 
-  // ── Relations ────────────────────────────────────────────
-  memory_bank          MemoryBank[]
-  life_decade_summaries LifeDecadeSummary[]
-  links_out            InnerCircleLink[]    @relation("LinkOwner")
-  links_in             InnerCircleLink[]    @relation("LinkTarget")
-  founded_religions    Religion[]           @relation("ReligionFounder")
-  led_religions        Religion[]           @relation("ReligionLeader")
-  religion_memberships ReligionMembership[]
-  founded_factions     Faction[]            @relation("FactionFounder")
-  led_factions         Faction[]            @relation("FactionLeader")
-  faction_memberships  FactionMembership[]
-  children_a           Person[]             @relation("ParentA")
-  children_b           Person[]             @relation("ParentB")
-  pregnancies_a        Pregnancy[]          @relation("PregnancyParentA")
-  pregnancies_b        Pregnancy[]          @relation("PregnancyParentB")
-  event_statuses       PersonEventStatus[]
+  // Faction competition ledger. `faction_income_year` accumulates this year's
+  // wealth-from-income for ranking purposes; reset to 0 at year-end after
+  // awards. `faction_wins` / `faction_leadership_years` are career counters
+  // for biography flavor + the Hall-of-Fame UI.
+  faction_income_year       Int @default(0)
+  faction_wins              Int @default(0)
+  faction_leadership_years  Int @default(0)
 
-  @@index([world_id])
-  @@index([parent_a_id])
-  @@index([parent_b_id])
-  @@map("persons")
+  world             World     @relation(fields: [world_id], references: [id], onDelete: Cascade)
+  city              City      @relation(fields: [city_id], references: [id])
+
+  bonds_owned       Relationship[] @relation("RelationshipOwner")
+  bonds_targeted    Relationship[] @relation("RelationshipTarget")
+  decade_summaries  LifeDecadeSummary[]
+
+  @@index([world_id, is_alive])
+  @@index([world_id, city_id])
+  @@index([world_id, faction_id])
+  @@index([world_id, religion_id])
+  @@index([is_pinned])
 }
 
-// --------------- Pregnancies (Round 2 — Births) ---------------
-// Created by a positive-band `conception` interaction outcome OR by the
-// agentic `attempt_conception` action. Resolves at tick = due_tick by
-// creating a child Person via createChildFromParents() and setting
-// resolved = true + child_id. A pregnancy whose parent dies before
-// resolution is dropped silently (Cascade on both parent foreign keys).
-model Pregnancy {
-  id String @id @default(uuid()) @db.Uuid
+// ─── Relationship (§5.5) ─────────────────────────────────────────────────────
 
-  parent_a    Person @relation("PregnancyParentA", fields: [parent_a_id], references: [id], onDelete: Cascade)
-  parent_a_id String @db.Uuid
-  parent_b    Person @relation("PregnancyParentB", fields: [parent_b_id], references: [id], onDelete: Cascade)
-  parent_b_id String @db.Uuid
+model Relationship {
+  id          String   @id @default(uuid())
+  owner_id    String
+  target_id   String
+  kind        String   // RelationshipKind: spouse|lover|rival|ally|nemesis
+  strength    Int      // 0–100
+  set_year    Int
 
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
+  owner       Person   @relation("RelationshipOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+  target      Person   @relation("RelationshipTarget", fields: [target_id], references: [id], onDelete: Cascade)
 
-  /// Tick at which the pregnancy began.
-  started_tick Int
-  /// Tick at which the pregnancy resolves — started_tick + PREGNANCY_DURATION_TICKS.
-  due_tick     Int
-
-  resolved Boolean @default(false)
-  child_id String? @db.Uuid
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  @@index([world_id])
-  @@index([resolved, due_tick])
-  @@index([parent_a_id])
-  @@index([parent_b_id])
-  @@map("pregnancies")
-}
-
-// --------------- Inner Circle Links ---------------
-// Directed per-person relationship edge. Both directions are stored
-// as separate rows when a relationship is reciprocal (e.g. siblings).
-model InnerCircleLink {
-  id String @id @default(uuid()) @db.Uuid
-
-  owner     Person @relation("LinkOwner", fields: [owner_id], references: [id], onDelete: Cascade)
-  owner_id  String @db.Uuid
-  target    Person @relation("LinkTarget", fields: [target_id], references: [id], onDelete: Cascade)
-  target_id String @db.Uuid
-
-  relation_type InnerCircleRelation
-  /// 0-100 — drives antagonizer pick weight and interaction colouring
-  bond_strength Int                 @default(50)
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  @@unique([owner_id, target_id, relation_type])
+  @@unique([owner_id, target_id, kind])
   @@index([owner_id])
   @@index([target_id])
-  @@map("inner_circle_links")
 }
 
-// --------------- Memory Bank ---------------
+// ─── Group (§8.1) ────────────────────────────────────────────────────────────
 
-model MemoryBank {
-  id String @id @default(uuid()) @db.Uuid
-
-  person    Person @relation(fields: [person_id], references: [id], onDelete: Cascade)
-  person_id String @db.Uuid
-
-  event_summary    String
-  emotional_impact EmotionalImpact
-
-  /// Snapshot of the PersonDelta that triggered this memory
-  delta_applied Json
-
-  /// 0.0-1.0 — how extreme the triggering outcome was. Drives memory decay
-  /// and trauma-modifier strength. 1.0 = top/bottom band; 0.0 = neutral.
-  magnitude       Float   @default(0.5)
-  /// Optional counterparty (antagonist/co-subject) used for grudge weighting.
-  counterparty_id String? @db.Uuid
-  /// Narrative voice this memory was written in. Optional — back-filled as null
-  /// on rows older than Phase 5. New writes should always tag.
-  tone            Tone?
-
-  // ── Phase 6: retention / compression ─────────────────────
-  /// Composite 0-100 weight computed at write-time from outcome band,
-  /// |stat delta|, group-lifecycle flag, counterparty prominence, and
-  /// event-type floors (death/birth/marriage). Used for ranking when a
-  /// LifeDecadeSummary is created and for getMemoryContext top-N selects.
-  weight          Int     @default(50)
-  /// The 0-indexed decade of the subject's life in which this memory
-  /// occurred (floor(age_at_event / 10)). Lets compressLifeDecade()
-  /// slice the table by decade-of-life without recomputing ages.
-  decade_of_life  Int?
-
-  timestamp  DateTime @default(now())
-  world_year Int? // the world calendar year this memory occurred in
-
-  @@index([person_id])
-  @@index([timestamp])
-  @@index([world_year])
-  @@index([counterparty_id])
-  @@index([person_id, decade_of_life])
-  @@index([person_id, weight])
-  @@map("memory_bank")
-}
-
-// WorldState has been superseded by the World model above.
-
-// --------------- Deceased Persons (RIP archive) ---------------
-
-model DeceasedPerson {
-  id                    String   @id @default(uuid()) @db.Uuid
+model Group {
+  id                    String      @id @default(uuid())
+  world_id              String
+  kind                  GroupKind
   name                  String
-  age_at_death          Int
-  world_year            Int
-  /// 'interaction' | 'old_age' | 'health'
-  cause                 String
-  final_health          Int
-  final_money           Int
-  peak_positive_outcome String?
-  peak_negative_outcome String?
-  died_at               DateTime @default(now())
+  founder_id            String?
+  leader_id             String?
+  founded_year          Int
+  dissolved_year        Int?
+  is_active             Boolean     @default(true)
+  treasury              Int         @default(0)
+  member_count_cached   Int         @default(0)
+  dominant_city_id      String?
 
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
+  wanted_tags           Json        @default("[]")           // PersonalityTag[]
+  type_affinities       Json        @default("{}")           // GroupTypeAffinities
+  stat_floors           Json        @default("{}")           // GroupStatFloors
+  cost_per_year         Int         @default(0)              // factions: flat coin/yr
 
-  @@index([world_id])
-  @@map("deceased_persons")
+  // Religion-only: dues are a fraction of each member's wealth instead of
+  // a flat amount. Nullable so faction rows stay on cost_per_year. v1 default
+  // 0.10 (10% of wealth). Range enforced 0.0–0.5 at the route layer.
+  cost_pct_of_wealth    Float?
+
+  // Faction-only (nullable for religions)
+  territory_cities      Json        @default("[]")           // string[] of city ids
+  tax_rate              Int?                                   // 0–50
+  army_size             Int         @default(0)
+  at_war_with           Json        @default("[]")           // string[] of group ids
+
+  // Faction-only competition config (null for religions). v1 defaults:
+  //   leader_dues_cut    = 0.10  → leader skims 10% of yearly dues
+  //   prize_shares       = [0.15, 0.08, 0.04] → top 3 prize fractions of yearly dues
+  //   competition_metric = 'income' (only metric supported in v1)
+  //   intelligence_target = founder.intelligence at spawn (soft fit-bias)
+  leader_dues_cut       Float?
+  prize_shares          Json?
+  competition_metric    String?
+  intelligence_target   Float?
+
+  // Lifecycle bookkeeping (§8.3)
+  low_membership_years  Int         @default(0)
+  last_schism_year      Int?
+
+  // §16.1.4 — last-50-year member count history for the Group chart.
+  // Shape: { year: number, real: number, bucket_share_total: number }[]
+  member_count_history  Json        @default("[]")
+
+  // Faction-only — last-N year-end awards plans (cap 10). Religions stay [].
+  // Shape: FactionAwardHistoryEntry[] (see services/faction-awards.service.ts).
+  award_history         Json        @default("[]")
+
+  world                 World       @relation(fields: [world_id], references: [id], onDelete: Cascade)
+
+  @@index([world_id, is_active])
+  @@index([world_id, kind])
 }
 
-// --------------- Rulesets ---------------
+// ─── LifeDecadeSummary (§5.4) ────────────────────────────────────────────────
 
-model Ruleset {
-  id          String   @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
-  is_active   Boolean  @default(false)
-  /// Full RulesetDef JSON — interaction types, outcome bands, weights
-  rules       Json
-  created_at  DateTime @default(now())
-  updated_at  DateTime @updatedAt
-
-  worlds World[]
-
-  @@map("rulesets")
-}
-
-// --------------- Yearly Headlines ---------------
-
-model YearlyHeadline {
-  id          String           @id @default(uuid()) @db.Uuid
-  /// For ANNUAL: the specific year. For DECADE: the decade start (e.g. 840 for 840–849)
-  year        Int
-  type        HeadlineType     @default(ANNUAL)
-  category    HeadlineCategory
-  headline    String
-  story       String
-  person_id   String?          @db.Uuid
-  person_name String?
-  /// Voice the narrative was written in. Decade summaries are always `epic`.
-  tone        Tone             @default(neutral)
-  created_at  DateTime         @default(now())
-
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  @@unique([world_id, year, type, category])
-  @@index([year])
-  @@index([type])
-  @@index([world_id])
-  @@map("yearly_headlines")
-}
-
-// --------------- Religions ---------------
-// Personality-cult shared entity. Dies the instant its founder dies.
-// `virus_profile` is a JSONB map of trait/global-score thresholds, e.g.
-//   { "charisma": { "min": 60 }, "faith.devotion": { "min": 70 } }
-// Unknown keys are silently ignored by the engine.
-model Religion {
-  id          String  @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
-
-  /// Nullable so dissolved religions persist in the archive after founder death.
-  founder    Person? @relation("ReligionFounder", fields: [founder_id], references: [id], onDelete: SetNull)
-  founder_id String? @db.Uuid
-  /// Current torchbearer — may differ from founder after succession.
-  /// Round 4: on founder death, we try to promote an heir before dissolving.
-  leader     Person? @relation("ReligionLeader", fields: [leader_id], references: [id], onDelete: SetNull)
-  leader_id  String? @db.Uuid
-
-  /// How the group was created. emergent / player / event
-  origin        GroupOrigin @default(emergent)
-  /// Tolerance band (0-100) around thresholds — softens profile matching.
-  tolerance     Int         @default(10)
-  /// Trait/global-score thresholds (see above comment).
-  virus_profile Json        @default("{}")
-  /// Wealth deducted per tick from each member (god-mode configurable).
-  cost_per_tick Int         @default(0)
-  /// Minimum trait values required for membership, e.g. { "intelligence": 60 }.
-  trait_minimums Json       @default("{}")
-  /// Group treasury — funded by member cost_per_tick; drained by war events.
-  balance       Int         @default(0)
-
-  founded_year     Int
-  is_active        Boolean   @default(true)
-  dissolved_year   Int?
-  /// 'founder_death' | 'leader_void' | 'player' | 'split'
-  dissolved_reason String?
-  /// Phase 1 — soft-delete timestamp for the new pipeline. Null = still active.
-  disbanded_at     DateTime?
-
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  memberships ReligionMembership[]
-
-  @@index([founder_id])
-  @@index([leader_id])
-  @@index([is_active])
-  @@index([world_id])
-  @@map("religions")
-}
-
-model ReligionMembership {
-  id String @id @default(uuid()) @db.Uuid
-
-  religion    Religion @relation(fields: [religion_id], references: [id], onDelete: Cascade)
-  religion_id String   @db.Uuid
-  person      Person   @relation(fields: [person_id], references: [id], onDelete: Cascade)
-  person_id   String   @db.Uuid
-
-  joined_year Int
-  /// 0.0-1.0 — how cleanly the member matches the current virus profile.
-  alignment   Float @default(1.0)
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  @@unique([religion_id, person_id])
-  @@index([religion_id])
-  @@index([person_id])
-  @@map("religion_memberships")
-}
-
-// --------------- Factions ---------------
-// Political/organisational group. Survives past its leader's death if a
-// worthy successor exists (leadership >= gate). Can split when a member's
-// profile alignment beats the leader's by more than the founder buffer.
-model Faction {
-  id          String  @id @default(uuid()) @db.Uuid
-  name        String
-  description String?
-
-  /// Nullable so historical factions persist after founder death.
-  founder    Person? @relation("FactionFounder", fields: [founder_id], references: [id], onDelete: SetNull)
-  founder_id String? @db.Uuid
-  /// Current leader — may differ from founder after succession or split.
-  leader     Person? @relation("FactionLeader", fields: [leader_id], references: [id], onDelete: SetNull)
-  leader_id  String? @db.Uuid
-
-  origin        GroupOrigin @default(emergent)
-  tolerance     Int         @default(10)
-  virus_profile Json        @default("{}")
-  /// Wealth deducted per tick from each member (god-mode configurable).
-  cost_per_tick  Int        @default(0)
-  /// Minimum trait values required for membership, e.g. { "charisma": 50 }.
-  trait_minimums Json       @default("{}")
-  /// Group treasury — funded by member cost_per_tick; drained by war events.
-  balance        Int        @default(0)
-
-  founded_year     Int
-  is_active        Boolean   @default(true)
-  dissolved_year   Int?
-  /// 'leader_void' | 'player' | 'split' | 'merged'
-  dissolved_reason String?
-  /// Phase 1 — soft-delete timestamp for the new pipeline. Null = still active.
-  disbanded_at     DateTime?
-
-  /// If this faction was born from a split, the parent faction id.
-  split_from_id String? @db.Uuid
-
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  memberships FactionMembership[]
-
-  @@index([founder_id])
-  @@index([leader_id])
-  @@index([is_active])
-  @@index([world_id])
-  @@map("factions")
-}
-
-model FactionMembership {
-  id String @id @default(uuid()) @db.Uuid
-
-  faction    Faction @relation(fields: [faction_id], references: [id], onDelete: Cascade)
-  faction_id String  @db.Uuid
-  person     Person  @relation(fields: [person_id], references: [id], onDelete: Cascade)
-  person_id  String  @db.Uuid
-
-  joined_year          Int
-  alignment            Float @default(1.0)
-  /// Used by split-detection: ticks that this member's alignment has
-  /// exceeded the leader's alignment by the founder-buffer margin.
-  split_pressure_ticks Int   @default(0)
-
-  created_at DateTime @default(now())
-  updated_at DateTime @updatedAt
-
-  @@unique([faction_id, person_id])
-  @@index([faction_id])
-  @@index([person_id])
-  @@map("faction_memberships")
-}
-
-// --------------- Life Decade Summary ---------------
-// Written at every birthday where age % 10 === 0 && age > 0. Compresses
-// the just-completed decade of PersonMemory into a fixed-size snapshot
-// (top-N by weight, tier-dependent). Raw memories in that decade are then
-// deleted. Chains via prior_summary_id so a 70-year-old has 7 linked rows.
 model LifeDecadeSummary {
-  id String @id @default(uuid()) @db.Uuid
+  id                  String   @id @default(uuid())
+  person_id           String
+  decade_start_year   Int
+  ranked_memories     Json     @default("[]")    // top memories of decade
+  prior_summary_id    String?
 
-  person    Person @relation(fields: [person_id], references: [id], onDelete: Cascade)
-  person_id String @db.Uuid
+  person              Person   @relation(fields: [person_id], references: [id], onDelete: Cascade)
 
-  /// Age at which this decade ended (always a multiple of 10, > 0).
-  /// e.g. 30 means "the decade of life from age 20 through 29".
-  decade_end_age Int
-  /// Same concept as `decade_end_age / 10 - 1`; indexed for range queries.
-  decade_of_life Int
-
-  /// World year the decade began.
-  world_year_start Int
-  /// World year the decade ended.
-  world_year_end   Int
-
-  /// JSONB array of the top-N preserved memories for this decade.
-  /// Shape: [{ event_summary, emotional_impact, tone, weight,
-  ///           world_year, counterparty_id, delta_applied }]
-  /// N is tier-driven: intimate=10, town=5, civilization=3.
-  top_memories Json @default("[]")
-
-  /// Aggregate stats for the decade — used by getMemoryContext to answer
-  /// "what happened to X in their 30s" without re-reading raw memories.
-  /// Shape: { interaction_count, avg_magnitude, peak_positive, peak_negative,
-  ///          stat_deltas: { morality, influence, wealth, ... } }
-  aggregates Json @default("{}")
-
-  /// Prior decade summary (age-10 earlier). Enables decade chaining so future
-  /// narration has the whole life sketch without a separate findMany call.
-  prior_summary_id String? @db.Uuid
-
-  created_at DateTime @default(now())
-
-  @@unique([person_id, decade_end_age])
-  @@index([person_id])
-  @@index([person_id, decade_of_life])
-  @@map("life_decade_summaries")
+  @@index([person_id, decade_start_year])
 }
 
-// --------------- Group Memory ---------------
-// Religion/faction-scoped narrative memory. Write-once, keep-forever. Tiny
-// volume (group-lifecycle events only: founded, first-member, schism, leader
-// death, war). Keyed to group_id via polymorphic (group_type, group_id) so
-// both religions and factions share one memory stream.
-model GroupMemory {
-  id String @id @default(uuid()) @db.Uuid
+// ─── BiographyArchive (§10) ──────────────────────────────────────────────────
 
-  /// 'religion' | 'faction'
-  group_type String
-  group_id   String @db.Uuid
+model BiographyArchive {
+  id                  String   @id @default(uuid())
+  world_id            String
+  person_id           String   @unique
+  name                String
+  race                String
+  age_at_demote       Int
+  type                PersonType
+  personality_tags    Json     @default("[]")
+  state_tags          Json     @default("[]")
+  wealth_at_demote    Int
+  mother_id           String?
+  father_id           String?
+  spouse_id           String?
+  faction_id          String?
+  religion_id         String?
+  top_memories        Json     @default("[]")    // top 5 memories at archive time
+  was_criminal        Boolean  @default(false)
+  demotion_reason     String                     // 'death' | 'demoted' | 'overflow'
+  demote_year         Int
 
-  world_id String @db.Uuid
-
-  event_summary   String
-  event_kind      String // 'founded' | 'first_member' | 'schism' | 'leader_death' | 'war' | ...
-  tone            Tone   @default(epic)
-  world_year      Int
-  /// 0-100 — how pivotal this was in the group's arc. Reads rank by this.
-  weight          Int    @default(70)
-  /// Optional counterparty group for war/schism events.
-  counterparty_id String? @db.Uuid
-
-  /// JSONB — free-form event payload (member counts, alignment deltas, etc.)
-  payload Json @default("{}")
-
-  created_at DateTime @default(now())
-
-  @@index([group_type, group_id])
-  @@index([world_id])
-  @@index([world_year])
-  @@map("group_memories")
-}
-
-// --------------- World Memory ---------------
-// World-scale canonical events. ~0-5/year. Never decays. Read by decade
-// summary prompts to thread narrative forward across centuries.
-model WorldMemory {
-  id String @id @default(uuid()) @db.Uuid
-
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  event_summary String
-  /// 'plague' | 'nuke' | 'crash' | 'religion_founded' | 'faction_founded' |
-  /// 'war_declared' | 'decade_canon' | 'player_edict' | ...
-  event_kind    String
-  tone          Tone   @default(epic)
-  world_year    Int
-  /// 0-100. Reads rank by this when the table grows.
-  weight        Int    @default(80)
-
-  payload Json @default("{}")
-
-  created_at DateTime @default(now())
+  world               World    @relation(fields: [world_id], references: [id], onDelete: Cascade)
 
   @@index([world_id])
-  @@index([world_id, world_year])
-  @@map("world_memories")
 }
 
-// --------------- Tick Job (Postgres-as-queue) ---------------
-// Long-running work (Claude narration, decade-headline generation) is
-// enqueued here and consumed by a single-worker loop using pg advisory
-// locks. Synchronous tick simulation does NOT go through this queue —
-// only opt-in narrative generation does.
-model TickJob {
-  id String @id @default(uuid()) @db.Uuid
+// ─── WorldEvent (§9.4) ───────────────────────────────────────────────────────
+// Single table — active when ended_year is null, archived when set.
 
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
+model WorldEvent {
+  id                       String          @id @default(uuid())
+  world_id                 String
+  event_def_id             EventType
+  city_id                  String?         // city-scoped events
+  faction_id               String?         // faction-scoped events
+  started_year             Int
+  ended_year               Int?
+  end_reason               EventEndReason?
+  duration_years           Int?            // null = condition-bound
+  end_condition            Json?           // free-form predicate descriptor
+  bucket_modifiers         Json            @default("[]")   // BucketModifier[]
+  real_person_target_rules Json            @default("[]")   // RealPersonTargetRule[]
+  cooldown_key             String?         // for cascade cooldown bookkeeping
 
-  /// 'generate_year_headlines' | 'generate_decade_headlines' | ...
-  kind   String
-  status JobStatus @default(pending)
+  world                    World           @relation(fields: [world_id], references: [id], onDelete: Cascade)
 
-  /// Input payload (e.g. { year: 842, category: 'MOST_DRAMATIC_FALL' })
-  payload Json @default("{}")
-  /// Output on success (e.g. { headline_ids: [...] })
-  result  Json?
-
-  /// Set to a random bigint by the claiming worker and used with
-  /// pg_try_advisory_lock so only one worker progresses a job at a time.
-  lock_key BigInt?
-
-  error        String?
-  attempts     Int      @default(0)
-  max_attempts Int      @default(3)
-
-  created_at  DateTime  @default(now())
-  started_at  DateTime?
-  finished_at DateTime?
-
-  @@index([status])
-  @@index([world_id, status])
-  @@index([kind, status])
-  @@map("tick_jobs")
+  @@index([world_id, ended_year])
+  @@index([world_id, event_def_id])
+  @@index([world_id, city_id])
 }
 
-// --------------- Yearly Report ---------------
-// Deterministic number-report written by the synchronous tick pipeline
-// every game year. Cheap to generate, cheap to read, no Claude involved.
-// Serves as the default Dashboard "what just happened" surface and as
-// input to the opt-in headline generator.
-model YearlyReport {
-  id String @id @default(uuid()) @db.Uuid
+// ─── YearRun (§15.2 + §15.2.1) ───────────────────────────────────────────────
 
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
+model YearRun {
+  id              String         @id @default(uuid())
+  world_id        String
+  year            Int
+  random_seed     BigInt
+  status          YearRunStatus  @default(pending)
+  started_at      DateTime?
+  completed_at    DateTime?
+  error_message   String?
+  log             Json           @default("{}")     // engine-emitted breadcrumbs
 
-  year              Int
-  population_start  Int
-  population_end    Int
-  births            Int   @default(0)
-  deaths            Int   @default(0)
-  deaths_by_cause   Json  @default("{}") // { interaction, old_age, health }
-  market_index_start Float
-  market_index_end   Float
-
-  /// Top stat swings for the year — array of
-  ///   { person_id, person_name, stat, delta, from, to }
-  /// Trimmed to top 10 by |delta| at write time.
-  top_swings     Json @default("[]")
-  /// Group lifecycle events this year
-  ///   [{ group_type, group_id, name, kind }]
-  group_events   Json @default("[]")
-  /// Any bulk God Mode actions applied this year
-  bulk_actions   Json @default("[]")
-  /// Global force composite snapshot { warScore, loveScore, ... }
-  force_scores   Json @default("{}")
-
-  created_at DateTime @default(now())
+  world           World          @relation(fields: [world_id], references: [id], onDelete: Cascade)
 
   @@unique([world_id, year])
-  @@index([world_id])
-  @@map("yearly_reports")
-}
-
-// --------------- World Events ---------------
-// Player-activated events that run every tick until disabled.
-// Max 6 active events per world (enforced in routes/events.ts).
-// event_def_id keys into the static EVENT_CATALOG in shared/src/events.ts.
-model WorldEvent {
-  id           String   @id @default(uuid()) @db.Uuid
-  world        World    @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id     String   @db.Uuid
-  /// Key into static EVENT_CATALOG e.g. 'plague' | 'war' | 'golden_age' etc.
-  event_def_id String
-  /// Activation parameters (JSON matching the event's ParamSchema).
-  params       Json
-  started_tick Int
-  started_year Int
-  /// Phase 1 — how many years this event runs. Null = indefinite (player ends manually).
-  duration_years  Int?
-  /// Counts down by 0.5 each bi-annual. When ≤0 the event auto-expires.
-  years_remaining Float   @default(0)
-  /// Active events tick every cycle. Player sets to false to stop.
-  is_active    Boolean  @default(true)
-  created_at   DateTime @default(now())
-
-  statuses PersonEventStatus[]
-
-  @@index([world_id])
-  @@index([world_id, is_active])
-  @@map("world_events")
-}
-
-// --------------- Year Run (async pipeline tracker) ---------------
-// One row per Advance Year call. Tracks pipeline progress so the SSE
-// endpoint can stream phase updates to the frontend.
-model YearRun {
-  id       String @id @default(uuid()) @db.Uuid
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  year         Int
-  /// Current pipeline phase: 'bi_annual_a' | 'bi_annual_b' | 'year_end' | 'completed' | 'failed'
-  phase        String @default("bi_annual_a")
-  /// 0–100 progress within the current phase.
-  progress_pct Int    @default(0)
-  /// 'running' | 'completed' | 'failed'
-  status       String @default("running")
-
-  error        String?
-  message      String?
-
-  started_at   DateTime  @default(now())
-  completed_at DateTime?
-
-  @@index([world_id])
   @@index([world_id, status])
-  @@map("year_runs")
-}
-
-// --------------- World Snapshot (denormalized world view) ---------------
-// One row per world. Upserted after each bi-annual phase. The /world
-// frontend route reads exclusively from this — no aggregation queries.
-model WorldSnapshot {
-  id       String @id @default(uuid()) @db.Uuid
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @unique @db.Uuid
-
-  /// Full denormalized world view. Shape defined in DESIGN.md §0.5 Phase 6.
-  payload Json @default("{}")
-
-  updated_at DateTime @updatedAt
-
-  @@map("world_snapshots")
-}
-
-// --------------- Event History (completed events archive) ---------------
-// Written when a WorldEvent ends (expired / manually ended / condition met).
-model EventHistory {
-  id       String @id @default(uuid()) @db.Uuid
-  world    World  @relation(fields: [world_id], references: [id], onDelete: Cascade)
-  world_id String @db.Uuid
-
-  event_def_id    String
-  params          Json   @default("{}")
-  started_year    Int
-  ended_year      Int
-  /// 'expired' | 'manual' | 'condition_met'
-  end_reason      String
-  /// Actual number of years the event ran.
-  duration_actual Int?
-
-  created_at DateTime @default(now())
-
-  @@index([world_id])
-  @@map("event_history")
-}
-
-// --------------- Person Event Status ---------------
-// Tracks per-person state for events that infect / mark individuals
-// (e.g. Plague infected list). One row per (event, person) pair.
-model PersonEventStatus {
-  id        String     @id @default(uuid()) @db.Uuid
-  event     WorldEvent @relation(fields: [event_id], references: [id], onDelete: Cascade)
-  event_id  String     @db.Uuid
-  person    Person     @relation(fields: [person_id], references: [id], onDelete: Cascade)
-  person_id String     @db.Uuid
-  /// 'infected' | 'recovered' — extensible for future event states
-  status    String
-
-  created_at DateTime @default(now())
-
-  @@unique([event_id, person_id])
-  @@index([event_id])
-  @@index([person_id])
-  @@map("person_event_statuses")
 }

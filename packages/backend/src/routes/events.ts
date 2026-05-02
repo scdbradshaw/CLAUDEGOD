@@ -1,165 +1,109 @@
-// ============================================================
-// /api/events — World event management
-// Player activates/deactivates events from the catalog.
-// Hard cap: MAX_ACTIVE_EVENTS (6) simultaneous active events.
-// ============================================================
+// Events router (Phase 8).
+//
+// GET    /api/events?world_id=...&kind=...&active=...
+// GET    /api/events/:id
+// POST   /api/events           (player drop / god-override)
+// POST   /api/events/:id/end   (manual end)
 
-import { Router, Request, Response } from 'express';
-import prisma from '../db/client';
-import { getActiveWorld } from '../services/time.service';
-import { EVENT_BY_ID, MAX_ACTIVE_EVENTS } from '@civ-sim/shared';
-import type { EventDefId } from '@civ-sim/shared';
-import { endEventAndArchive } from '../services/events.service';
+import { Router, type Request, type Response } from 'express';
+import { z } from 'zod';
+import { EVENT_TYPES } from '@claude-god/shared';
+import { prisma } from '../lib/prisma';
+import {
+  dropEvent,
+  endEventTx,
+  getEvent,
+  listEvents,
+} from '../services/event.service';
+import { getEventDef, listEventDefs } from '../engine/events/catalog';
 
-const router = Router();
+export const eventsRouter = Router();
 
-// ── GET /api/events ──────────────────────────────────────────
-// Returns all active events for the current world.
-router.get('/', async (_req: Request, res: Response) => {
-  const world = await getActiveWorld();
-
-  const events = await prisma.worldEvent.findMany({
-    where:   { world_id: world.id, is_active: true },
-    orderBy: { created_at: 'asc' },
-    select: {
-      id:              true,
-      event_def_id:    true,
-      params:          true,
-      started_tick:    true,
-      started_year:    true,
-      duration_years:  true,
-      years_remaining: true,
-      is_active:       true,
-    },
-  });
-
-  res.json(events);
+const ListQuery = z.object({
+  world_id: z.string().uuid(),
+  kind: z.enum(EVENT_TYPES).optional(),
+  active: z.enum(['true', 'false']).optional(),
 });
 
-// ── GET /api/events/history ──────────────────────────────────
-// Returns completed events for the current world, newest first.
-router.get('/history', async (_req: Request, res: Response) => {
-  const world = await getActiveWorld();
-
-  const history = await prisma.eventHistory.findMany({
-    where:   { world_id: world.id },
-    orderBy: { ended_year: 'desc' },
-    select: {
-      id:              true,
-      event_def_id:    true,
-      params:          true,
-      started_year:    true,
-      ended_year:      true,
-      end_reason:      true,
-      duration_actual: true,
-      created_at:      true,
-    },
-  });
-
-  res.json(history);
-});
-
-// ── POST /api/events ─────────────────────────────────────────
-// Activate an event from the catalog.
-// Body: { event_def_id: string, params: Record<string, unknown> }
-router.post('/', async (req: Request, res: Response) => {
-  const { event_def_id, params, duration_years } = req.body as {
-    event_def_id:    string;
-    params:          Record<string, unknown>;
-    duration_years?: number | null;
-  };
-
-  if (!event_def_id || !params) {
-    res.status(400).json({ error: 'event_def_id and params are required' });
-    return;
+eventsRouter.get('/', async (req: Request, res: Response) => {
+  const parsed = ListQuery.safeParse(req.query);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'invalid_query', issues: parsed.error.issues });
   }
+  const { world_id, kind, active } = parsed.data;
+  const rows = await listEvents({
+    world_id,
+    kind,
+    active: active === undefined ? undefined : active === 'true',
+  });
+  res.json({ rows });
+});
 
-  // Phase 4: validate duration_years if supplied.
-  let resolvedDuration: number | null = null;
-  if (duration_years != null) {
-    if (typeof duration_years !== 'number' || !Number.isFinite(duration_years) || duration_years <= 0) {
-      res.status(400).json({ error: 'duration_years must be a positive number or null for indefinite' });
-      return;
+// God-Mode: read-only event catalog. Must precede '/:id' so it isn't shadowed.
+eventsRouter.get('/catalog', async (_req: Request, res: Response) => {
+  res.json({ rows: listEventDefs() });
+});
+
+eventsRouter.get('/:id', async (req: Request, res: Response) => {
+  const ev = await getEvent(req.params.id);
+  if (!ev) return res.status(404).json({ error: 'event_not_found' });
+  res.json(ev);
+});
+
+const DropBody = z
+  .object({
+    world_id: z.string().uuid(),
+    event_def_id: z.enum(EVENT_TYPES),
+    city_id: z.string().uuid().optional(),
+    faction_id: z.string().uuid().optional(),
+    year: z.number().int().min(0),
+  })
+  .superRefine((val, ctx) => {
+    const def = getEventDef(val.event_def_id);
+    if (!def) return;
+    if (def.scope === 'city' && !val.city_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'city_id_required_for_city_scoped_event',
+      });
     }
-    resolvedDuration = duration_years;
-  }
-
-  const def = EVENT_BY_ID[event_def_id as EventDefId];
-  if (!def) {
-    res.status(400).json({
-      error:     `Unknown event type: "${event_def_id}"`,
-      available: Object.keys(EVENT_BY_ID),
-    });
-    return;
-  }
-
-  const world = await getActiveWorld();
-
-  // Enforce cap
-  const activeCount = await prisma.worldEvent.count({
-    where: { world_id: world.id, is_active: true },
-  });
-  if (activeCount >= MAX_ACTIVE_EVENTS) {
-    res.status(409).json({
-      error: `Maximum ${MAX_ACTIVE_EVENTS} events active at once. Disable one first.`,
-    });
-    return;
-  }
-
-  // Prevent running the same event type twice simultaneously
-  const alreadyActive = await prisma.worldEvent.findFirst({
-    where: { world_id: world.id, event_def_id, is_active: true },
-  });
-  if (alreadyActive) {
-    res.status(409).json({ error: `"${def.name}" is already active.` });
-    return;
-  }
-
-  const event = await prisma.worldEvent.create({
-    data: {
-      world_id:        world.id,
-      event_def_id,
-      params:          params as never,
-      // Effective tick = year_count * 2 + bi_annual_index. Matches the
-      // cadence used by Pregnancy.due_tick + the year.service pipeline.
-      started_tick:    world.year_count * 2 + world.bi_annual_index,
-      started_year:    world.current_year,
-      duration_years:  resolvedDuration,
-      years_remaining: resolvedDuration ?? 0,
-      is_active:       true,
-    },
-    select: {
-      id:              true,
-      event_def_id:    true,
-      params:          true,
-      started_tick:    true,
-      started_year:    true,
-      duration_years:  true,
-      years_remaining: true,
-      is_active:       true,
-    },
+    if (def.scope === 'faction' && !val.faction_id) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'faction_id_required_for_faction_scoped_event',
+      });
+    }
   });
 
-  res.status(201).json(event);
+eventsRouter.post('/', async (req: Request, res: Response) => {
+  const parsed = DropBody.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+  }
+  const result = await dropEvent({ ...parsed.data, source: 'player' });
+  if (result.status === 'rejected') {
+    return res.status(409).json({ error: 'event_rejected', reason: result.reason });
+  }
+  if (result.status === 'queued') {
+    return res.status(202).json({ status: 'queued' });
+  }
+  res.status(201).json(result);
 });
 
-// ── DELETE /api/events/:id ───────────────────────────────────
-// Player-initiated end. Archives to event_history with end_reason='manual'.
-router.delete('/:id', async (req: Request, res: Response) => {
-  const { id } = req.params;
-  const world  = await getActiveWorld();
+const EndBody = z.object({ year: z.number().int().min(0) });
 
-  const event = await prisma.worldEvent.findFirst({
-    where: { id, world_id: world.id },
-  });
-  if (!event) {
-    res.status(404).json({ error: 'Event not found' });
-    return;
+eventsRouter.post('/:id/end', async (req: Request, res: Response) => {
+  const parsed = EndBody.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
   }
-
-  await endEventAndArchive(prisma, id, 'manual', world.current_year);
-
-  res.json({ success: true });
+  const ev = await getEvent(req.params.id);
+  if (!ev) return res.status(404).json({ error: 'event_not_found' });
+  if (ev.ended_year != null) {
+    return res.status(409).json({ error: 'event_already_ended' });
+  }
+  await prisma.$transaction((tx) =>
+    endEventTx({ event_id: ev.id, year: parsed.data.year, end_reason: 'manual' }, tx),
+  );
+  res.json({ status: 'ended' });
 });
-
-export default router;

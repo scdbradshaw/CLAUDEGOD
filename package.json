@@ -1,6 +1,6 @@
 {
-  "name": "civ-sim",
-  "version": "1.0.0",
+  "name": "claude-god",
+  "version": "0.1.0",
   "private": true,
   "workspaces": [
     "packages/*"

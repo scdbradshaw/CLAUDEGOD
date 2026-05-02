@@ -16,7 +16,7 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
     "paths": {
-      "@civ-sim/shared": ["../shared/src/types.ts"]
+      "@claude-god/shared": ["../shared/src/index.ts"]
     }
   },
   "include": ["src"]

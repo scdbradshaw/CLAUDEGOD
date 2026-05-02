@@ -1,949 +1,734 @@
-// ============================================================
-// YEAR SERVICE — §0.5 Phase 2: Async Year Pipeline
-// ------------------------------------------------------------
-// Replaces the synchronous /api/interactions/tick with a
-// pg-boss–driven pipeline. One "Advance Year" = 3 phases:
+// Year-advance service (Phase 3).
 //
-//   1. Bi-annual A  — interactions, events, deaths, births, market
-//   2. Bi-annual B  — same passes, second half of the year
-//   3. Year-end     — aging, agentic turn, conversions, splits,
-//                     memory/trauma decay, occupation income,
-//                     relationship decay, leader extraction,
-//                     group treasury, yearly report
+// Phase 3 is the *shell* — `runYearPhase` only increments `World.current_year`.
+// Phases 4–11 will plug in interactions, bucket dynamics, events, etc., per
+// DESIGN.md §15.3.
 //
-// Each phase writes a WorldSnapshot on completion. The SSE
-// endpoint streams YearRun row updates to the frontend so the
-// player has a live progress heartbeat.
-//
-// Player-direct actions (steal/gift/force) remain synchronous
-// and immediate — they do not go through this pipeline.
-// ============================================================
+// Single-flight per world: at most one YearRun in (pending|running) at a
+// time. A second `enqueueYearAdvance` while one is active returns the
+// existing run id instead of creating a duplicate.
 
-import { EventEmitter } from 'node:events';
-import type { Job } from 'pg-boss';
-import { Prisma } from '@prisma/client';
-import prisma from '../db/client';
+import { Prisma, type PrismaClient, type YearRun } from '@prisma/client';
+import { prisma as defaultPrisma } from '../lib/prisma';
+import { ensureQueue, startBoss, YEAR_ADVANCE_QUEUE } from '../lib/queue';
+import { randomSeedRoot } from '../lib/rng';
+import { makeYearRng } from '../engine/rng-context';
 import {
-  PREGNANCY_DURATION_TICKS,
-  TRAUMA_ANNUAL_DECAY,
-  JOB_BY_ID,
-  type RulesetDef,
-} from '@civ-sim/shared';
-import { withTiming, type PhaseTimings } from '../tick/timing';
-import { resolveInteractionsPhase } from '../tick/resolve-interactions';
-import { updateThreeMarkets, type MarketHistoryEntry } from '../tick/market';
-import { deriveHardStats, type DeriveStatsInput } from '../tick/derive-stats';
-import { processBirths } from '../services/births.service';
+  runBucketDynamics,
+  type BucketState,
+} from '../engine/bucket-dynamics';
+import { rollRealDeaths } from '../engine/real-deaths';
+import { planChurn } from '../engine/churn';
+import { archiveAndDeleteTx, materializeFromBucketTx } from './person.service';
+import { pruneExpiredStateTags, addStateTag } from '../engine/state-tags';
+import { addMemory } from '../engine/memory';
+import { runDecadeCompressionTx } from './memory.service';
 import {
-  loadActiveGroups,
-  loadMembershipIndex,
-  runMembershipDropoff,
-  type PersonSnapshot,
-} from '../services/membership.service';
-import { spawnGroup } from '../services/group-formation.service';
+  handleLeaderDeathTx,
+  runGroupLifecyclePhaseTx,
+} from './group.service';
 import {
-  handlePersonDeath,
-  runFactionSplitCheck,
-} from '../services/group-lifecycle.service';
+  evaluateCascadesTx,
+  pushStateHistoryTx,
+  tickActiveEventsTx,
+} from './event.service';
+import { runAgenticPhaseTx } from './action.service';
+import { runRealPersonEconomyPhaseTx } from './economy.service';
+import { runFactionAwardsTx } from './faction-awards.service';
+import { runYearEndInvariants } from '../engine/invariants';
+import { runInteractionsPhaseTx } from './interaction.service';
 import {
-  extractLeaderCuts,
-  checkSmallGroupDisbands,
-} from '../services/leadership.service';
-import { writeMemoriesBatch } from '../services/memory.service';
-import {
-  applyRelationshipDeltas,
-  decayAndPruneForWorld,
-  classifyImpactForRelationship,
-} from '../services/relationships.service';
-import {
-  runAgenticTurn,
-  type AgentPersonSnapshot,
-  type OwnedEdge,
-} from '../services/agentic.service';
-import {
-  applyOccupationIncome,
-  distributeInheritance,
-} from '../services/economy-occupation.service';
-import {
-  processEconomyTick,
-  type EconomyPerson,
-} from '../services/economy.service';
-import {
-  runReligionConversionPass,
-} from '../services/religion-dynamics.service';
-import {
-  processEventsTick,
-  applyHappinessDrift,
-  fundGroupTreasuries,
-  decrementEventTimers,
-} from '../services/events.service';
-import type { CriminalRecord } from '@civ-sim/shared';
+  computeDefenseRating,
+  type DefensePopulation,
+} from '../engine/civic-defense';
+import type { ActiveEventTags, GroupForDues } from '../engine/economy';
+import type { PersonType } from '@claude-god/shared';
+import type { MarketSignalsEntry, Memory, StateTagEntry } from '@claude-god/shared';
+import { Stopwatch, type StepTiming } from '../lib/stopwatch';
 
-// ── SSE bus ──────────────────────────────────────────────────
-// yearRunBus.emit(yearRunId, payload) — SSE route subscribes per request.
-// In-process pub/sub; no polling required.
-export const yearRunBus = new EventEmitter();
-
-// ── Year-run helpers ─────────────────────────────────────────
-
-export interface YearRunUpdate {
-  year_run_id: string;
-  phase:        string;
-  progress_pct: number;
-  status:       string;
-  message?:     string;
+export interface EnqueueYearAdvanceInput {
+  world_id: string;
+  /** Optional supplied seed (replay). Otherwise generated. */
+  random_seed?: bigint;
 }
 
-async function updateYearRun(
-  yearRunId:   string,
-  phase:       string,
-  progressPct: number,
-  status = 'running',
-  message?: string,
+export type EnqueueYearAdvanceResult =
+  | { status: 'enqueued'; run: YearRun }
+  | { status: 'already_active'; run: YearRun };
+
+/**
+ * Create a YearRun for the next year and enqueue a pg-boss job. Single-flight
+ * guard: if there's already a pending|running run for this world, returns
+ * `already_active` with that existing run.
+ */
+export async function enqueueYearAdvance(
+  input: EnqueueYearAdvanceInput,
+  prisma: PrismaClient = defaultPrisma,
+): Promise<EnqueueYearAdvanceResult> {
+  const result = await prisma.$transaction(async (tx) => {
+    // Single-flight check
+    const active = await tx.yearRun.findFirst({
+      where: { world_id: input.world_id, status: { in: ['pending', 'running'] } },
+      orderBy: { year: 'desc' },
+    });
+    if (active) return { status: 'already_active' as const, run: active };
+
+    const world = await tx.world.findUnique({ where: { id: input.world_id } });
+    if (!world) throw new Error('world_not_found');
+
+    const targetYear = world.current_year + 1;
+
+    // A prior attempt for this same target year may have failed (the outer tx
+    // rolled back current_year, but markYearRunFailed left a row at status
+    // 'failed'). Clear it so the retry doesn't trip the (world_id, year)
+    // unique constraint.
+    await tx.yearRun.deleteMany({
+      where: { world_id: world.id, year: targetYear, status: 'failed' },
+    });
+
+    const run = await tx.yearRun.create({
+      data: {
+        world_id: world.id,
+        year: targetYear,
+        random_seed: input.random_seed ?? randomSeedRoot(),
+        status: 'pending',
+      },
+    });
+    return { status: 'enqueued' as const, run };
+  });
+
+  if (result.status === 'enqueued') {
+    await ensureQueue(YEAR_ADVANCE_QUEUE);
+    const boss = await startBoss();
+    await boss.send(YEAR_ADVANCE_QUEUE, { year_run_id: result.run.id });
+  }
+  return result;
+}
+
+/**
+ * The year-phase pipeline. Phase 3 shell: increments world.current_year by 1
+ * and updates the YearRun row. Future phases will replace the body with the
+ * full §15.3 step list.
+ *
+ * Idempotency: re-running for the same YearRun is a no-op once status is
+ * `completed`. Workers should still avoid duplicate work, but if pg-boss
+ * retries, this guard keeps the year from double-advancing.
+ */
+export async function runYearPhase(
+  yearRunId: string,
+  prisma: PrismaClient = defaultPrisma,
+): Promise<{ year: number; world_id: string; timings: StepTiming[] }> {
+  const sw = new Stopwatch();
+  return prisma.$transaction(async (tx) => {
+    const run = await tx.yearRun.findUnique({ where: { id: yearRunId } });
+    if (!run) throw new Error('year_run_not_found');
+    if (run.status === 'completed') {
+      return { year: run.year, world_id: run.world_id, timings: sw.result() };
+    }
+    if (run.status === 'failed') {
+      throw new Error('year_run_failed_previously');
+    }
+
+    await tx.yearRun.update({
+      where: { id: yearRunId },
+      data: { status: 'running', started_at: new Date() },
+    });
+
+    // ── Phase 4: bucket dynamics + market + births/deaths + drift ──────────
+    sw.tick('setup');
+    const world = await tx.world.findUnique({
+      where: { id: run.world_id },
+      include: { cities: { include: { buckets: true } } },
+    });
+    if (!world) throw new Error('world_not_found');
+    if (world.current_year + 1 !== run.year) {
+      throw new Error(
+        `year_mismatch: world at year ${world.current_year}, run targets ${run.year}`,
+      );
+    }
+
+    // v1: single city per world (DESIGN.md §3 / CITY_SEED_COUNT = 1).
+    const city = world.cities[0];
+    if (!city) throw new Error('world_has_no_city');
+
+    const yearRng = makeYearRng(run.random_seed, world.id, run.year);
+
+    // ── Phase 13a.5: §15.3 step 1 — social interactions among real persons. ──
+    // Runs before bucket dynamics + economy so memory entries land first and
+    // any mid-year cascade triggers see them. Wealth transfers from gifts
+    // settle into income reads downstream.
+    await runInteractionsPhaseTx(world.id, run.year, yearRng, tx);
+    sw.tick('interactions');
+
+    // §6.3 — load active groups for dues math (bucket-side here; real-member
+    // dues run after bucket-dynamics in runRealPersonEconomyPhaseTx).
+    const groupRows = await tx.group.findMany({
+      where: { world_id: world.id, is_active: true },
+      select: {
+        id: true,
+        kind: true,
+        cost_per_year: true,
+        cost_pct_of_wealth: true,
+        is_active: true,
+        member_count_cached: true,
+      },
+    });
+    const groups: GroupForDues[] = groupRows.map((g) => ({
+      id: g.id,
+      kind: g.kind,
+      cost_per_year: g.cost_per_year,
+      cost_pct_of_wealth: g.cost_pct_of_wealth,
+      is_active: g.is_active,
+      member_count_cached: g.member_count_cached,
+    }));
+
+    // §6.4 v2 — read active events once for the market step (food/drought/
+    // bountiful affect farmer output) AND for the §6.1 income modifiers below.
+    // boom is derived after runBucketDynamics from the new market_index.
+    const activeEvents = await tx.worldEvent.findMany({
+      where: { world_id: world.id, ended_year: null },
+      select: { event_def_id: true },
+    });
+    const eventsForMarket: ActiveEventTags = {
+      war: activeEvents.some((e) => e.event_def_id === 'FactionWar'),
+      plague: activeEvents.some((e) => e.event_def_id === 'Plague'),
+      famine: activeEvents.some((e) => e.event_def_id === 'Famine'),
+      drought: activeEvents.some((e) => e.event_def_id === 'Drought'),
+      bountiful: activeEvents.some((e) => e.event_def_id === 'BountifulHarvest'),
+      boom: false, // re-derived after runBucketDynamics from new market_index
+    };
+
+    // §19 two-tier accounting: count alive real persons per type so bucket
+    // dynamics deaths only apply to the aggregate-NPC slice of each bucket.
+    const realPersonRows = await tx.person.groupBy({
+      by: ['type'],
+      where: { world_id: world.id, city_id: city.id, is_alive: true },
+      _count: { id: true },
+    });
+    const realPersonCounts: Record<string, number> = {};
+    for (const r of realPersonRows) {
+      realPersonCounts[r.type] = r._count.id;
+    }
+
+    const result = runBucketDynamics({
+      world: { market_index: world.market_index, market_trend: world.market_trend },
+      city: {
+        treasury: city.treasury,
+        tax_rate: city.tax_rate,
+        region_resource: city.region_resource,
+      },
+      buckets: city.buckets.map(
+        (b): BucketState => ({
+          type: b.type,
+          count: b.count,
+          avg_age: b.avg_age,
+          birth_rate: b.birth_rate,
+          death_rate: b.death_rate,
+          avg_wealth: b.avg_wealth,
+          avg_intelligence: b.avg_intelligence,
+          avg_combat: b.avg_combat,
+          avg_health: b.avg_health,
+          avg_happiness: b.avg_happiness,
+          avg_sexuality: b.avg_sexuality,
+          faction_shares: (b.faction_shares ?? {}) as Record<string, number>,
+          religion_shares: (b.religion_shares ?? {}) as Record<string, number>,
+        }),
+      ),
+      rng: yearRng,
+      groups,
+      active_events: eventsForMarket,
+      real_person_counts: realPersonCounts,
+    });
+
+    sw.tick('bucket_dynamics');
+
+    // Persist the snapshot.
+    // Append to World.market_index_history (cap 100). 3-decimal precision
+    // is plenty for the chart and keeps the JSON column compact.
+    const priorHistory = (Array.isArray(world.market_index_history)
+      ? world.market_index_history
+      : []) as Array<{ year: number; index: number }>;
+    const nextMarketHistory = [
+      ...priorHistory,
+      { year: run.year, index: Math.round(result.world.market_index * 1000) / 1000 },
+    ].slice(-100);
+
+    // §6.4 v2 — append the class-signals entry so the Market page can chart
+    // food ratio, the four deltas, and per-class population/wealth over time.
+    const priorSignals = (Array.isArray(world.market_signals_history)
+      ? world.market_signals_history
+      : []) as unknown as MarketSignalsEntry[];
+    const nextSignalsHistory = [
+      ...priorSignals,
+      buildMarketSignalsEntry(run.year, result.diagnostics, result.buckets),
+    ].slice(-100);
+
+    await tx.world.update({
+      where: { id: world.id },
+      data: {
+        current_year: run.year,
+        market_index: result.world.market_index,
+        market_index_history: nextMarketHistory as unknown as object,
+        market_signals_history: nextSignalsHistory as unknown as object,
+      },
+    });
+    // Civic defense (role-power): working class + soldier contribute a flat
+    // per-capita share to city.defense_rating, capped at 100. Computed across
+    // bucket aggregate + real persons so both populations defend the city.
+    const defensePopulations: DefensePopulation[] = result.buckets.map((b) => ({
+      type: b.type as PersonType,
+      total_count: b.count + (realPersonCounts[b.type] ?? 0),
+    }));
+    const nextDefenseRating = computeDefenseRating(defensePopulations);
+
+    await tx.city.update({
+      where: { id: city.id },
+      data: {
+        treasury: result.city.treasury,
+        defense_rating: nextDefenseRating,
+        // Snapshot rollups (per §13). Recompute from the new bucket state.
+        population_total: result.buckets.reduce((s, b) => s + b.count, 0),
+        avg_wealth: snapshotAvgWealth(result.buckets),
+        mood_score: snapshotMoodScore(result.buckets),
+      },
+    });
+    for (const b of result.buckets) {
+      await tx.bucket.update({
+        where: { city_id_type: { city_id: city.id, type: b.type } },
+        data: {
+          count: b.count,
+          avg_wealth: b.avg_wealth,
+          avg_intelligence: b.avg_intelligence,
+          avg_combat: b.avg_combat,
+          avg_health: b.avg_health,
+          avg_happiness: b.avg_happiness,
+          avg_sexuality: b.avg_sexuality,
+          avg_age: b.avg_age,
+        },
+      });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Phase 10: real-person economy — income, dues, investment ────────────
+    // Reuse activeEvents read above; derive boom from the new market_index.
+    const activeEventTags: ActiveEventTags = {
+      ...eventsForMarket,
+      boom: result.world.market_index >= 1.6,
+    };
+    const economyResult = await runRealPersonEconomyPhaseTx(
+      {
+        world_id: world.id,
+        year: run.year,
+        prev_index: result.diagnostics.market_index_before,
+        next_index: result.diagnostics.market_index_after,
+        active_events: activeEventTags,
+        bucket_dues_by_group: result.bucket_dues_by_group,
+        city_id: city.id,
+        tax_collected: result.diagnostics.tax_collected,
+      },
+      tx,
+    );
+
+    // Faction year-end awards: leader cut + top-3 prizes from this year's
+    // dues intake. Runs immediately after dues are credited so treasury
+    // covers payouts. Religions are skipped (they aren't competitions).
+    await runFactionAwardsTx(
+      world.id,
+      run.year,
+      economyResult.dues_by_group_this_year,
+      tx,
+    );
+    sw.tick('economy');
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Phase 5/6: real-person aging + deaths + churn ──────────────────────
+    // 0. Age++ for all alive real persons (Phase 6).
+    await tx.person.updateMany({
+      where: { world_id: world.id, is_alive: true },
+      data: { age: { increment: 1 } },
+    });
+
+    const alivePersons = await tx.person.findMany({
+      where: { world_id: world.id, is_alive: true },
+      select: {
+        id: true,
+        age: true,
+        current_health: true,
+        is_pinned: true,
+        last_event_year: true,
+        created_year: true,
+        spouse_id: true,
+        mother_id: true,
+        father_id: true,
+        name: true,
+      },
+    });
+
+    // 1. Roll real-person deaths.
+    const deathRoll = rollRealDeaths(
+      alivePersons.map((p) => ({
+        id: p.id,
+        age: p.age,
+        current_health: p.current_health,
+      })),
+      yearRng,
+    );
+
+    // Pre-build a death lookup so we can compute kin grief before deletes.
+    const decedentMap = new Map(
+      deathRoll.deaths.map((d) => {
+        const p = alivePersons.find((x) => x.id === d.id);
+        return [d.id, { id: d.id, name: p?.name ?? 'someone' }];
+      }),
+    );
+    // For each surviving kin (spouse/mother/father pointing at a decedent),
+    // apply `grieving` + write a memory entry. Bulk: collect grievers, fetch
+    // their state_tags + recent_memories in one query, mutate in JS, flush
+    // with a single bulk UPDATE FROM VALUES.
+    const griefMap = new Map<
+      string,
+      Array<{ id: string; relation: 'spouse' | 'mother' | 'father' }>
+    >();
+    for (const survivor of alivePersons) {
+      if (decedentMap.has(survivor.id)) continue;
+      const lostKin: Array<{ id: string; relation: 'spouse' | 'mother' | 'father' }> = [];
+      if (survivor.spouse_id && decedentMap.has(survivor.spouse_id)) {
+        lostKin.push({ id: survivor.spouse_id, relation: 'spouse' });
+      }
+      if (survivor.mother_id && decedentMap.has(survivor.mother_id)) {
+        lostKin.push({ id: survivor.mother_id, relation: 'mother' });
+      }
+      if (survivor.father_id && decedentMap.has(survivor.father_id)) {
+        lostKin.push({ id: survivor.father_id, relation: 'father' });
+      }
+      if (lostKin.length === 0) continue;
+      griefMap.set(survivor.id, lostKin);
+    }
+    if (griefMap.size > 0) {
+      await applyKinGriefBulk(tx, griefMap, decedentMap, run.year);
+    }
+
+    for (const d of deathRoll.deaths) {
+      // Phase 7: if the decedent led a group, elect a successor (or dissolve).
+      // Must run BEFORE archiveAndDeleteTx since handleLeaderDeathTx reads the
+      // Group.leader_id pointer that still references this Person row.
+      await handleLeaderDeathTx(d.id, run.year, tx);
+      await archiveAndDeleteTx(
+        { person_id: d.id, reason: 'death', year: run.year, death_cause: d.cause },
+        tx,
+      );
+    }
+    sw.tick('deaths');
+
+    // 2. Plan + apply churn (demotions + promotions). Use bucket counts that
+    //    reflect the real-deaths just applied.
+    const survivorMap = new Map(alivePersons.map((p) => [p.id, p]));
+    for (const d of deathRoll.deaths) survivorMap.delete(d.id);
+    const survivors = [...survivorMap.values()];
+
+    const refreshedBuckets = await tx.bucket.findMany({
+      where: { city_id: city.id },
+      select: { city_id: true, type: true, count: true, avg_wealth: true },
+    });
+    const churn = planChurn({
+      persons: survivors.map((p) => ({
+        id: p.id,
+        is_pinned: p.is_pinned,
+        last_event_year: p.last_event_year,
+        created_year: p.created_year,
+      })),
+      buckets: refreshedBuckets,
+      year: run.year,
+      rng: yearRng,
+    });
+
+    for (const id of churn.demotion_ids) {
+      await archiveAndDeleteTx(
+        { person_id: id, reason: 'demoted', year: run.year },
+        tx,
+      );
+    }
+
+    // §19 two-tier accounting: only promote when there is aggregate capacity
+    // (bucket.count > real_person_count_for_type). Without this gate,
+    // pickPromotions (with-replacement) can generate more promotion picks
+    // than the aggregate pool supports. Those new real persons then die in
+    // events/agentic later in the pipeline, decrementing count past zero.
+    //
+    // Fetch real-person counts once after demotions; track in-memory as we
+    // promote so we avoid an extra DB round-trip per pick.
+    const realCountByTypeRows = await tx.person.groupBy({
+      by: ['type'],
+      where: { world_id: world.id, city_id: city.id, is_alive: true },
+      _count: { id: true },
+    });
+    const liveRealByType: Record<string, number> = {};
+    for (const r of realCountByTypeRows) liveRealByType[r.type] = r._count.id;
+
+    for (const pick of churn.promotion_picks) {
+      // Skip if no aggregate NPCs remain for this type.
+      const bucketRow = refreshedBuckets.find((b) => b.type === pick.type);
+      const currentReal = liveRealByType[pick.type] ?? 0;
+      if (!bucketRow || bucketRow.count <= currentReal) continue;
+
+      try {
+        await materializeFromBucketTx(
+          {
+            world_id: world.id,
+            city_id: pick.city_id,
+            type: pick.type,
+            year: run.year,
+            rng: yearRng,
+          },
+          tx,
+        );
+        liveRealByType[pick.type] = currentReal + 1;
+      } catch (err) {
+        // Cap-overflow can race past the planner's reservation; skip cleanly.
+        if (err instanceof Error && err.message === 'real_person_cap_reached') continue;
+        throw err;
+      }
+    }
+    sw.tick('churn');
+
+    // 3. Year-end state-tag prune (drop expired entries).
+    await pruneAllStateTags(tx, world.id, run.year);
+    sw.tick('state_tags');
+
+    // 4. Decade compression for any person whose new age is a multiple of 10.
+    await runDecadeCompressionTx(world.id, run.year, tx);
+    sw.tick('decade_compression');
+
+    // 5. Phase 8 step 7: tick active events (apply modifiers + target rules +
+    //    end-condition evaluation). Must run before cascades so just-resolved
+    //    slots free up first.
+    await tickActiveEventsTx(world.id, run.year, yearRng, tx);
+    sw.tick('events_tick');
+
+    // 6. Phase 8 step 8: cascade-trigger evaluation. Reads state_history
+    //    (populated at end of *previous* year) + per-key cooldowns from
+    //    archived WorldEvents.
+    await evaluateCascadesTx(world.id, run.year, yearRng, tx);
+    sw.tick('cascades');
+
+    // 7. Phase 7 step 9: group lifecycle (membership drift, switching,
+    //    schism, dissolution). Per §15.3 must sit after cascades.
+    await runGroupLifecyclePhaseTx(world.id, run.year, tx);
+    sw.tick('group_lifecycle');
+
+    // 8. Phase 9 step 10: agentic actions (queued first, then engine-rolled).
+    //    Mutates state immediately within tx so subsequent intents see
+    //    updated state (§11.5).
+    await runAgenticPhaseTx(world.id, run.year, yearRng, tx);
+    sw.tick('agentic');
+
+    // 9. Phase 8 tail: push this year's snapshot into World.state_history so
+    //    next year's cascade evaluation sees it.
+    await pushStateHistoryTx(world.id, run.year, tx, {
+      food_ratio: result.diagnostics.food_ratio,
+    });
+    sw.tick('state_history');
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── Phase 13a.4: always-on invariants suite (§20.1). ──────────────────
+    // Throws InvariantViolationError on violation → outer tx rolls back →
+    // SSE worker emits `failed`. Wealth-conservation is skipped in
+    // production (wealth_at_start=0) because plague/death destroys
+    // bucket-aggregated wealth by design; tolerance would have to absorb
+    // arbitrary event mods. The other four rules cover all real bugs.
+    await runYearEndInvariants(
+      { world_id: world.id, wealth_at_start: 0, wealth_tolerance: 0 },
+      tx,
+    );
+    sw.tick('invariants');
+
+    const timings = sw.result();
+    await tx.yearRun.update({
+      where: { id: yearRunId },
+      data: {
+        status: 'completed',
+        completed_at: new Date(),
+        log: { timings } as unknown as object,
+      },
+    });
+    return { year: run.year, world_id: world.id, timings };
+  }, { timeout: 60_000, maxWait: 10_000 });
+}
+
+export async function markYearRunFailed(
+  yearRunId: string,
+  message: string,
+  prisma: PrismaClient = defaultPrisma,
 ): Promise<void> {
   await prisma.yearRun.update({
     where: { id: yearRunId },
-    data:  {
-      phase,
-      progress_pct: progressPct,
-      status,
-      ...(message ? { message } : {}),
-    },
-  });
-  const update: YearRunUpdate = { year_run_id: yearRunId, phase, progress_pct: progressPct, status, message };
-  yearRunBus.emit(yearRunId, update);
-}
-
-// ── Effective-tick helper ─────────────────────────────────────
-// Pregnancy.due_tick uses 2 ticks-per-year units.
-// year_count=5, biAnnualIndex=0 → effectiveTick=10
-// year_count=5, biAnnualIndex=1 → effectiveTick=11
-function effectiveTick(yearCount: number, biAnnualIndex: number): number {
-  return yearCount * 2 + biAnnualIndex;
-}
-
-// ── Snapshot writer ───────────────────────────────────────────
-
-async function writeSnapshot(worldId: string, year: number, biAnnualIndex: number): Promise<void> {
-  const [
-    world,
-    personDetails,
-    religionRows,
-    factionRows,
-    activeEvents,
-    recentDeaths,
-    infectionCounts,
-    mostConnectedRow,
-    activeRuleset,
-  ] = await Promise.all([
-    prisma.world.findUniqueOrThrow({ where: { id: worldId } }),
-    // Phase 6 extended — one pass pulls every stat we need for the dashboard.
-    prisma.person.findMany({
-      where:  { world_id: worldId, current_health: { gt: 0 } },
-      select: {
-        id: true, name: true, age: true, money: true, job_id: true,
-        happiness: true, trauma_score: true, moral_score: true, current_health: true,
-      },
-    }),
-    prisma.religion.findMany({
-      where:   { world_id: worldId, is_active: true },
-      include: { memberships: { select: { id: true } }, leader: { select: { id: true, name: true, money: true } } },
-      orderBy: { balance: 'desc' },
-    }),
-    prisma.faction.findMany({
-      where:   { world_id: worldId, is_active: true },
-      include: { memberships: { select: { id: true } }, leader: { select: { id: true, name: true, money: true } } },
-      orderBy: { balance: 'desc' },
-    }),
-    prisma.worldEvent.findMany({ where: { world_id: worldId, is_active: true } }),
-    // Recent deaths in the current world year, grouped by cause.
-    prisma.deceasedPerson.groupBy({
-      by:    ['cause'],
-      where: { world_id: worldId, world_year: year },
-      _count: { _all: true },
-    }),
-    // Per-event infection counts (covers plague-style events; 0 for everything else).
-    prisma.personEventStatus.groupBy({
-      by:     ['event_id'],
-      where:  { event: { world_id: worldId, is_active: true }, status: 'infected' },
-      _count: { _all: true },
-    }),
-    // Most-connected person (by outgoing inner-circle link count).
-    prisma.$queryRaw<{ owner_id: string; cnt: number }[]>`
-      SELECT l.owner_id, COUNT(*)::int AS cnt
-      FROM inner_circle_links l
-      JOIN persons p ON p.id = l.owner_id
-      WHERE p.world_id = ${worldId}::uuid AND p.current_health > 0
-      GROUP BY l.owner_id
-      ORDER BY cnt DESC
-      LIMIT 1
-    `,
-    prisma.ruleset.findFirst({ where: { is_active: true }, select: { id: true, name: true } }),
-  ]);
-
-  const population = personDetails.length;
-
-  // ── Averages (computed in JS from the findMany to avoid a second query) ──
-  let sumHealth = 0, sumHappiness = 0, sumMoney = 0;
-  for (const p of personDetails) { sumHealth += p.current_health; sumHappiness += p.happiness; sumMoney += p.money; }
-  const avgHealth    = population > 0 ? Math.round(sumHealth    / population) : 0;
-  const avgHappiness = population > 0 ? Math.round(sumHappiness / population) : 0;
-  const avgMoney     = population > 0 ? Math.round(sumMoney     / population) : 0;
-
-  // ── Wealth distribution ────────────────────────────────────
-  const sortedByMoney = [...personDetails].sort((a, b) => a.money - b.money);
-  let median = 0;
-  if (population > 0) {
-    median = population % 2
-      ? sortedByMoney[(population - 1) >> 1].money
-      : Math.round((sortedByMoney[population / 2 - 1].money + sortedByMoney[population / 2].money) / 2);
-  }
-  // Gini coefficient: 0 = perfect equality, 1 = one person holds everything.
-  // Standard formula on sorted ascending: G = Σ(2i − n − 1)·xᵢ / (n · Σxᵢ)
-  let gini = 0;
-  if (population > 0 && sumMoney > 0) {
-    let cum = 0;
-    for (let i = 0; i < population; i++) {
-      cum += (2 * (i + 1) - population - 1) * Math.max(0, sortedByMoney[i].money);
-    }
-    gini = Math.max(0, Math.min(1, cum / (population * sumMoney)));
-  }
-  const top1pctCount = population > 0 ? Math.max(1, Math.floor(population * 0.01)) : 0;
-  const top1pctSum   = sortedByMoney.slice(population - top1pctCount).reduce((s, p) => s + p.money, 0);
-  const top1pctShare = sumMoney > 0 ? top1pctSum / sumMoney : 0;
-  const richestRow   = population > 0 ? sortedByMoney[population - 1] : null;
-
-  // ── Employment + avg job pay ───────────────────────────────
-  let employedCount = 0;
-  let totalJobPay   = 0;
-  for (const p of personDetails) {
-    if (!p.job_id) continue;
-    const job = JOB_BY_ID.get(p.job_id);
-    if (!job) continue;
-    employedCount++;
-    totalJobPay += job.base_pay;
-  }
-  const employedPct = population > 0 ? employedCount / population : 0;
-  const avgJobPay   = employedCount > 0 ? Math.round(totalJobPay / employedCount) : 0;
-
-  // ── Age distribution (user-specified buckets) + oldest ─────
-  const buckets = [
-    { label: '0–12',  min: 0,  max: 12,  count: 0 },
-    { label: '13–20', min: 13, max: 20,  count: 0 },
-    { label: '21–35', min: 21, max: 35,  count: 0 },
-    { label: '36–50', min: 36, max: 50,  count: 0 },
-    { label: '51–65', min: 51, max: 65,  count: 0 },
-    { label: '65+',   min: 66, max: 999, count: 0 },
-  ];
-  let oldestP: typeof personDetails[0] | null = null;
-  let newbornCount = 0;
-  for (const p of personDetails) {
-    if (p.age <= 12)      buckets[0].count++;
-    else if (p.age <= 20) buckets[1].count++;
-    else if (p.age <= 35) buckets[2].count++;
-    else if (p.age <= 50) buckets[3].count++;
-    else if (p.age <= 65) buckets[4].count++;
-    else                  buckets[5].count++;
-    if (p.age === 0) newbornCount++;
-    if (!oldestP || p.age > oldestP.age) oldestP = p;
-  }
-
-  // ── Top people (vanity leaderboards) ───────────────────────
-  // Single pass picks a winner for every axis. O(N) with no intermediate sorts.
-  let maxMoneyP: typeof personDetails[0] | null = null;
-  let maxTraumaP: typeof personDetails[0] | null = null;
-  let maxMoralP: typeof personDetails[0] | null = null;
-  let minMoralP: typeof personDetails[0] | null = null;
-  let maxHappyP: typeof personDetails[0] | null = null;
-  let minHappyP: typeof personDetails[0] | null = null;
-  for (const p of personDetails) {
-    if (!maxMoneyP  || p.money        > maxMoneyP.money)         maxMoneyP  = p;
-    if (!maxTraumaP || p.trauma_score > maxTraumaP.trauma_score) maxTraumaP = p;
-    if (!maxMoralP  || p.moral_score  > maxMoralP.moral_score)   maxMoralP  = p;
-    if (!minMoralP  || p.moral_score  < minMoralP.moral_score)   minMoralP  = p;
-    if (!maxHappyP  || p.happiness    > maxHappyP.happiness)     maxHappyP  = p;
-    if (!minHappyP  || p.happiness    < minHappyP.happiness)     minHappyP  = p;
-  }
-  const nameById = new Map(personDetails.map(p => [p.id, p.name]));
-  const topConnected = mostConnectedRow[0]
-    ? { id: mostConnectedRow[0].owner_id, name: nameById.get(mostConnectedRow[0].owner_id) ?? '—', value: Number(mostConnectedRow[0].cnt) }
-    : null;
-
-  const relByCount = [...religionRows].sort((a, b) => b.memberships.length - a.memberships.length);
-
-  const recentDeathsTotal = recentDeaths.reduce((sum, row) => sum + row._count._all, 0);
-  const recentDeathsByCause = Object.fromEntries(
-    recentDeaths.map(row => [row.cause, row._count._all]),
-  );
-
-  const infectionByEventId = new Map(
-    infectionCounts.map(row => [row.event_id, row._count._all]),
-  );
-
-  const payload = {
-    year,
-    bi_annual_index: biAnnualIndex,
-    population,
-    total_deaths: world.total_deaths,
-    recent_deaths_year: {
-      year,
-      total:    recentDeathsTotal,
-      by_cause: recentDeathsByCause as Record<string, number>,
-    },
-    averages: {
-      health:    avgHealth,
-      happiness: avgHappiness,
-      money:     avgMoney,
-    },
-    // ── Phase 6 extended — dashboard stats ─────────────
-    wealth: {
-      median,
-      gini:           Math.round(gini * 1000) / 1000,
-      top_1pct_share: Math.round(top1pctShare * 1000) / 1000,
-      richest:        richestRow ? { id: richestRow.id, name: richestRow.name, money: richestRow.money } : null,
-    },
-    employment: {
-      employed_count:   employedCount,
-      unemployed_count: population - employedCount,
-      employed_pct:     Math.round(employedPct * 1000) / 1000,
-      avg_job_pay:      avgJobPay,
-    },
-    age_distribution: {
-      buckets,
-      oldest:        oldestP ? { id: oldestP.id, name: oldestP.name, age: oldestP.age } : null,
-      newborn_count: newbornCount,
-    },
-    top_people: {
-      richest:          maxMoneyP  ? { id: maxMoneyP.id,  name: maxMoneyP.name,  value: maxMoneyP.money }                     : null,
-      oldest:           oldestP    ? { id: oldestP.id,    name: oldestP.name,    value: oldestP.age }                         : null,
-      most_connected:   topConnected,
-      most_traumatized: maxTraumaP ? { id: maxTraumaP.id, name: maxTraumaP.name, value: Math.round(maxTraumaP.trauma_score) } : null,
-      most_virtuous:    maxMoralP  ? { id: maxMoralP.id,  name: maxMoralP.name,  value: maxMoralP.moral_score }               : null,
-      most_corrupt:     minMoralP  ? { id: minMoralP.id,  name: minMoralP.name,  value: minMoralP.moral_score }               : null,
-      happiest:         maxHappyP  ? { id: maxHappyP.id,  name: maxHappyP.name,  value: maxHappyP.happiness }                 : null,
-      saddest:          minHappyP  ? { id: minHappyP.id,  name: minHappyP.name,  value: minHappyP.happiness }                 : null,
-    },
-    ruleset: {
-      id:   activeRuleset?.id   ?? null,
-      name: activeRuleset?.name ?? null,
-    },
-    markets: {
-      stable:   { index: world.market_stable_index,  trend: world.market_stable_trend  },
-      standard: { index: world.market_index,          trend: world.market_trend          },
-      volatile: { index: world.market_volatile_index, trend: world.market_volatile_trend },
-    },
-    religions: {
-      top_by_count:   relByCount.slice(0, 3).map(r => ({ id: r.id, name: r.name, value: r.memberships.length })),
-      top_by_balance: religionRows.slice(0, 3).map(r => ({ id: r.id, name: r.name, value: r.balance })),
-      richest_leader: religionRows
-        .filter(r => r.leader)
-        .sort((a, b) => (b.leader?.money ?? 0) - (a.leader?.money ?? 0))[0]
-        ? (() => { const r = religionRows.filter(x => x.leader).sort((a, b) => (b.leader?.money ?? 0) - (a.leader?.money ?? 0))[0]; return { id: r.id, name: r.name, leader_name: r.leader!.name, leader_money: r.leader!.money }; })()
-        : null,
-    },
-    factions: {
-      top_by_count:   [...factionRows].sort((a, b) => b.memberships.length - a.memberships.length).slice(0, 3).map(f => ({ id: f.id, name: f.name, value: f.memberships.length })),
-      top_by_balance: factionRows.slice(0, 3).map(f => ({ id: f.id, name: f.name, value: f.balance })),
-      richest_leader: factionRows
-        .filter(f => f.leader)
-        .sort((a, b) => (b.leader?.money ?? 0) - (a.leader?.money ?? 0))[0]
-        ? (() => { const f = factionRows.filter(x => x.leader).sort((a, b) => (b.leader?.money ?? 0) - (a.leader?.money ?? 0))[0]; return { id: f.id, name: f.name, leader_name: f.leader!.name, leader_money: f.leader!.money }; })()
-        : null,
-    },
-    active_events: activeEvents.map(e => ({
-      id:              e.id,
-      def_id:          e.event_def_id,
-      params:          e.params,
-      started_year:    e.started_year,
-      duration_years:  e.duration_years,
-      years_remaining: e.years_remaining,
-      stats: {
-        infected_count: infectionByEventId.get(e.id) ?? 0,
-      },
-    })),
-    updated_at: new Date().toISOString(),
-  };
-
-  await prisma.worldSnapshot.upsert({
-    where:  { world_id: worldId },
-    create: { world_id: worldId, payload: payload as unknown as Prisma.InputJsonValue },
-    update: { payload: payload as unknown as Prisma.InputJsonValue },
-  });
-}
-
-// ── Living person shape ───────────────────────────────────────
-
-type LivingPerson = {
-  id:                  string;
-  name:                string;
-  age:                 number;
-  death_age:           number;
-  money:               number;
-  job_id:              string | null;
-  traits:              Prisma.JsonValue;
-  global_scores:       Prisma.JsonValue;
-  max_health:          number;
-  current_health:      number;
-  attack:              number;
-  defense:             number;
-  speed:               number;
-  trauma_score:        number;
-  relationship_status: string;
-  criminal_record:     Prisma.JsonValue;
-};
-
-// ── Bi-annual phase ───────────────────────────────────────────
-// Interactions, events, deaths, births, market. Mirrors the
-// non-year-boundary section of the old /api/interactions/tick.
-
-async function runBiAnnualPhase(
-  worldId:     string,
-  tickNum:     number,
-  currentYear: number,
-  yearRunId:   string,
-  timings:     PhaseTimings,
-): Promise<void> {
-  const EMPTY_GLOBAL_TRAITS = {} as ReturnType<typeof Object.create>;
-  const EMPTY_TRAIT_MULTS:   Record<string, number> = {};
-
-  // 1. Load world + ruleset
-  const world = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
-  const rulesetRow = await prisma.ruleset.findFirst({ where: { is_active: true } });
-  // Ruleset is optional — without one, the interactions phase is skipped but
-  // economy, market, events, births, and aging all run as normal.
-
-  // 2. Load living persons
-  const living = await prisma.person.findMany({
-    where:  { world_id: worldId, current_health: { gt: 0 } },
-    select: {
-      id: true, name: true, money: true, age: true, death_age: true,
-      job_id: true, traits: true, global_scores: true,
-      max_health: true, current_health: true, attack: true, defense: true, speed: true,
-      trauma_score: true, relationship_status: true, criminal_record: true,
-    },
-  }) as LivingPerson[];
-
-  if (living.length < 2) return;
-
-  const byId = new Map(living.map(p => [p.id, p]));
-  const livingIds = living.map(p => p.id);
-
-  // 3. Inner-circle links
-  const allLinks = await prisma.innerCircleLink.findMany({
-    where:  { owner_id: { in: livingIds } },
-    select: { owner_id: true, target_id: true, bond_strength: true, relation_type: true },
-  });
-  const linksOf = new Map<string, OwnedEdge[]>();
-  for (const l of allLinks) {
-    const arr = linksOf.get(l.owner_id) ?? [];
-    arr.push({ target_id: l.target_id, bond_strength: l.bond_strength, relation_type: l.relation_type as OwnedEdge['relation_type'] });
-    linksOf.set(l.owner_id, arr);
-  }
-
-  // 4. Groups + membership
-  const groups      = await loadActiveGroups(prisma);
-  const memberships = await loadMembershipIndex(prisma);
-
-  const personSnaps = new Map<string, PersonSnapshot>();
-  for (const p of living) {
-    personSnaps.set(p.id, {
-      id:             p.id,
-      traits:         (p.traits        ?? {}) as Record<string, number>,
-      global_scores:  (p.global_scores ?? {}) as Record<string, number>,
-      current_health: p.current_health,
-    });
-  }
-
-  // 5. Resolve interactions — skipped when no ruleset is active.
-  const phaseResult = rulesetRow
-    ? await withTiming(timings, 'resolveInteractions', () =>
-        resolveInteractionsPhase({
-          prisma,
-          rules: rulesetRow.rules as unknown as RulesetDef,
-          living,
-          byId,
-          linksOf,
-          personSnaps,
-          groups,
-          memberships,
-          globalTraits: EMPTY_GLOBAL_TRAITS,
-          traitMults:   EMPTY_TRAIT_MULTS,
-        }),
-      )
-    : null;
-  const traitDeltas              = phaseResult?.traitDeltas              ?? {};
-  const pendingMemories          = phaseResult?.pendingMemories          ?? [];
-  const pendingJoinsByKey        = phaseResult?.pendingJoinsByKey        ?? new Map();
-  const pendingSpawnsByFounder   = phaseResult?.pendingSpawnsByFounder   ?? new Map();
-  const pendingPregnanciesByPair = phaseResult?.pendingPregnanciesByPair ?? new Map();
-
-  // 6. Compute final health + trait updates
-  const finalHealth: Record<string, number> = {};
-  type BulkUpdateRow = { id: string; traits: Record<string, number>; current_health?: number };
-  const bulkUpdates: BulkUpdateRow[] = [];
-
-  for (const p of living) {
-    const td = traitDeltas[p.id] ?? {};
-    const existingTraits = (p.traits ?? {}) as Record<string, number>;
-    const newTraits: Record<string, number> = { ...existingTraits };
-    let changed = false;
-
-    for (const [key, delta] of Object.entries(td)) {
-      if (delta === 0) continue;
-      const cur  = newTraits[key] ?? 50;
-      const next = Math.max(0, Math.min(100, cur + delta));
-      if (next !== cur) { newTraits[key] = next; changed = true; }
-    }
-
-    if (changed) {
-      const row: BulkUpdateRow = { id: p.id, traits: newTraits };
-      if (td.current_health !== undefined) row.current_health = Math.max(0, Math.min(100, p.current_health + td.current_health));
-      finalHealth[p.id] = row.current_health ?? p.current_health;
-      bulkUpdates.push(row);
-    } else {
-      finalHealth[p.id] = p.current_health;
-    }
-  }
-
-  // 7. Persist: traits + memories + joins + spawns + pregnancies
-  await withTiming(timings, 'persistInteractions', () => prisma.$transaction(async (tx) => {
-    if (bulkUpdates.length > 0) {
-      await tx.$executeRaw`
-        UPDATE persons p SET
-          traits         = p.traits || (u.updates->'traits')::jsonb,
-          current_health = COALESCE((u.updates->>'current_health')::int, p.current_health),
-          updated_at     = NOW()
-        FROM jsonb_array_elements(${JSON.stringify(bulkUpdates)}::jsonb) AS u(updates)
-        WHERE p.id = (u.updates->>'id')::uuid
-      `;
-    }
-
-    if (pendingMemories.length > 0) {
-      await writeMemoriesBatch(tx, pendingMemories.map(m => ({
-        personId:        m.person_id,
-        eventSummary:    m.event_summary,
-        emotionalImpact: m.emotional_impact,
-        deltaApplied:    { score: m.event_summary },
-        magnitude:       m.magnitude,
-        counterpartyId:  m.counterparty_id,
-        worldYear:       currentYear,
-        tone:            m.tone,
-        ageAtEvent:      m.age_at_event,
-        eventKind:       'interaction',
-      })));
-
-      const relDeltas = pendingMemories
-        .filter(m => m.counterparty_id)
-        .map(m => {
-          const classified = classifyImpactForRelationship(m.emotional_impact);
-          if (!classified) return null;
-          return { ownerId: m.person_id, targetId: m.counterparty_id!, kind: classified.kind, strengthDelta: classified.delta };
-        })
-        .filter((d): d is NonNullable<typeof d> => d !== null);
-      if (relDeltas.length > 0) await applyRelationshipDeltas(tx, relDeltas);
-    }
-
-    if (pendingJoinsByKey.size > 0) {
-      const religionJoins = [];
-      const factionJoins  = [];
-      for (const c of pendingJoinsByKey.values()) {
-        const row = { person_id: c.subject.id, joined_year: currentYear, alignment: c.alignment };
-        if (c.groupKind === 'religion') religionJoins.push({ ...row, religion_id: c.groupId });
-        else                            factionJoins.push({  ...row, faction_id:  c.groupId });
-      }
-      if (religionJoins.length > 0) await tx.religionMembership.createMany({ data: religionJoins, skipDuplicates: true });
-      if (factionJoins.length  > 0) await tx.factionMembership.createMany({  data: factionJoins,  skipDuplicates: true });
-    }
-
-    for (const intent of pendingSpawnsByFounder.values()) {
-      await spawnGroup(tx, intent, currentYear, worldId);
-    }
-
-    for (const pair of pendingPregnanciesByPair.values()) {
-      const existing = await tx.pregnancy.findFirst({
-        where: {
-          world_id: worldId, resolved: false,
-          OR: [
-            { parent_a_id: pair.parent_a_id }, { parent_b_id: pair.parent_a_id },
-            { parent_a_id: pair.parent_b_id }, { parent_b_id: pair.parent_b_id },
-          ],
-        },
-        select: { id: true },
-      });
-      if (existing) continue;
-      await tx.pregnancy.create({
-        data: {
-          parent_a_id: pair.parent_a_id, parent_b_id: pair.parent_b_id,
-          world_id: worldId, started_tick: tickNum, due_tick: tickNum + PREGNANCY_DURATION_TICKS,
-        },
-      });
-    }
-  }));
-
-  // 8. Derive hard stats — only for persons whose traits changed this phase.
-  // Full-population re-derive is O(N) with no benefit when traits are constant.
-  if (bulkUpdates.length > 0) {
-    await withTiming(timings, 'deriveHardStats', async () => {
-      const updatedTraitsById = new Map(bulkUpdates.map(u => [u.id, u.traits]));
-      const changedIds        = new Set(bulkUpdates.map(u => u.id));
-      const deriveInputs: DeriveStatsInput[] = living
-        .filter(p => changedIds.has(p.id) && finalHealth[p.id] > 0)
-        .map(p => ({
-          id:             p.id,
-          current_health: finalHealth[p.id],
-          max_health:     p.max_health,
-          attack:         p.attack,
-          defense:        p.defense,
-          speed:          p.speed,
-          traits:         updatedTraitsById.get(p.id) ?? (p.traits as Record<string, number>) ?? {},
-        }));
-      if (deriveInputs.length > 0) await deriveHardStats(prisma, deriveInputs);
-    });
-  }
-
-  // 9. Critical health mortal risk (1–9 HP)
-  for (const p of living) {
-    const hp = finalHealth[p.id];
-    if (hp > 0 && hp < 10) {
-      const deathChance = (10 - hp) / 10 * 0.4;
-      if (Math.random() < deathChance) finalHealth[p.id] = 0;
-    }
-  }
-
-  // 10. Interaction deaths — single transaction for all dead this bi-annual.
-  const interactionDead = living.filter(p => finalHealth[p.id] <= 0);
-  if (interactionDead.length > 0) {
-    await withTiming(timings, 'processInteractionDeaths', () =>
-      prisma.$transaction(async (tx) => {
-        // Distribute inheritance before any rows are deleted (cascade kills inner_circle_links).
-        for (const p of interactionDead) {
-          await handlePersonDeath(tx, p.id, p.name, currentYear, worldId);
-          await distributeInheritance(tx, p.id, p.name, p.money, currentYear);
-        }
-        // Bulk insert deceased records, bulk delete persons.
-        await tx.deceasedPerson.createMany({
-          data: interactionDead.map(p => ({
-            name: p.name, age_at_death: p.age, world_year: currentYear,
-            cause: 'interaction', final_health: 0, final_money: p.money, world_id: worldId,
-          })),
-        });
-        await tx.person.deleteMany({ where: { id: { in: interactionDead.map(p => p.id) } } });
-        await tx.world.update({
-          where: { id: worldId },
-          data:  { total_deaths: { increment: interactionDead.length } },
-        });
-      }),
-    );
-  }
-
-  // 11. Economy tick
-  const economyAlive: EconomyPerson[] = living
-    .filter(p => finalHealth[p.id] > 0)
-    .map(p => ({ id: p.id, name: p.name, age: p.age, money: p.money, job_id: p.job_id, traits: (p.traits ?? {}) as Record<string, number> }));
-
-  await withTiming(timings, 'economyTick', () =>
-    processEconomyTick(
-      prisma, economyAlive,
-      linksOf as Map<string, { target_id: string; bond_strength: number }[]>,
-      memberships.factionsByPerson, currentYear, worldId,
-      (world as any).job_income_multiplier ?? 1,
-      (world as any).col_pct ?? 0.30,
-    ),
-  );
-
-  // 12. Events tick + happiness drift + group treasury funding
-  await withTiming(timings, 'eventsTick', () =>
-    Promise.all([
-      processEventsTick(prisma, worldId, tickNum, currentYear),
-      applyHappinessDrift(prisma, worldId),
-      fundGroupTreasuries(prisma, worldId),
-    ]),
-  );
-
-  // 12b. Event timer decrement + auto-expiry — Phase 4
-  await withTiming(timings, 'eventTimers', () =>
-    decrementEventTimers(prisma, worldId, currentYear),
-  );
-
-  // 13. Births
-  await withTiming(timings, 'processBirths', () =>
-    processBirths(worldId, tickNum, currentYear, {}),
-  );
-
-  // 13b. Small-group disbands — Phase 5
-  await withTiming(timings, 'smallGroupDisbands', () =>
-    prisma.$transaction(async (tx) => {
-      await checkSmallGroupDisbands(tx, worldId, currentYear);
-    }),
-  );
-
-  // 14. Market update — capture output and persist new indices + history + highlights
-  const freshWorld = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
-  const history    = (freshWorld.market_history as unknown as MarketHistoryEntry[]) ?? [];
-  const marketResult = await withTiming(timings, 'updateMarket', () =>
-    updateThreeMarkets({
-      prisma, worldId, tickCount: tickNum,
-      stableIndex:        freshWorld.market_stable_index,
-      stableTrend:        freshWorld.market_stable_trend,
-      stableVolatility:   freshWorld.market_stable_volatility,
-      standardIndex:      freshWorld.market_index,
-      standardTrend:      freshWorld.market_trend,
-      standardVolatility: freshWorld.market_volatility,
-      volatileIndex:      freshWorld.market_volatile_index,
-      volatileTrend:      freshWorld.market_volatile_trend,
-      volatileVolatility: freshWorld.market_volatile_volatility,
-      marketHistory:      history,
-    }),
-  );
-  await prisma.world.update({
-    where: { id: worldId },
     data: {
-      market_stable_index:   marketResult.stable.newIndex,
-      market_index:          marketResult.standard.newIndex,
-      market_volatile_index: marketResult.volatile.newIndex,
-      market_history:        marketResult.marketHistory as unknown as Prisma.InputJsonValue,
-      market_highlights:     marketResult.highlights   as unknown as Prisma.InputJsonValue,
+      status: 'failed',
+      completed_at: new Date(),
+      error_message: message.slice(0, 1000),
     },
   });
 }
 
-// ── Year-end phase ────────────────────────────────────────────
-// Aging, natural deaths, memory/trauma decay, membership dropoff,
-// faction splits, relationship decay, agentic turn, occupation
-// income, religion conversions, yearly report.
+export async function getYearRun(
+  id: string,
+  prisma: PrismaClient = defaultPrisma,
+): Promise<YearRun | null> {
+  return prisma.yearRun.findUnique({ where: { id } });
+}
 
-async function runYearEndPhase(
-  worldId:    string,
-  newYear:    number,
-  yearRunId:  string,
-  timings:    PhaseTimings,
+// ─── Phase 6 helpers ────────────────────────────────────────────────────────
+
+type TxClient = Parameters<Parameters<PrismaClient['$transaction']>[0]>[0];
+
+async function applyKinGriefBulk(
+  tx: TxClient,
+  griefMap: Map<string, Array<{ id: string; relation: 'spouse' | 'mother' | 'father' }>>,
+  decedentMap: Map<string, { id: string; name: string }>,
+  year: number,
 ): Promise<void> {
-  const world = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
-
-  // 1. Age all living characters
-  await prisma.$executeRaw`
-    UPDATE persons SET age = LEAST(age + 1, death_age), updated_at = NOW()
-    WHERE world_id = ${worldId}::uuid
-  `;
-
-  // 2. Natural deaths
-  const naturallyDying = await prisma.$queryRaw<
-    Array<{ id: string; name: string; age: number; money: number }>
-  >`SELECT id, name, age, money FROM persons WHERE world_id = ${worldId}::uuid AND age >= death_age AND current_health > 0`;
-
-  const naturalDeaths = naturallyDying.length;
-  if (naturalDeaths > 0) {
-    await prisma.$transaction(async (tx) => {
-      for (const dead of naturallyDying) {
-        await handlePersonDeath(tx, dead.id, dead.name, newYear, worldId);
-        await distributeInheritance(tx, dead.id, dead.name, dead.money, newYear);
-      }
-      await tx.deceasedPerson.createMany({
-        data: naturallyDying.map(dead => ({
-          name: dead.name, age_at_death: dead.age, world_year: newYear,
-          cause: 'old_age', final_health: 0, final_money: dead.money, world_id: worldId,
-        })),
+  const survivorIds = [...griefMap.keys()];
+  const survivors = await tx.person.findMany({
+    where: { id: { in: survivorIds } },
+    select: { id: true, state_tags: true, recent_memories: true },
+  });
+  const updates: { id: string; tagsJson: string; memJson: string }[] = [];
+  for (const s of survivors) {
+    const lost = griefMap.get(s.id);
+    if (!lost) continue;
+    let tags = (Array.isArray(s.state_tags) ? s.state_tags : []) as unknown as StateTagEntry[];
+    let memories = (Array.isArray(s.recent_memories) ? s.recent_memories : []) as unknown as Memory[];
+    for (const lk of lost) {
+      const decedent = decedentMap.get(lk.id);
+      if (!decedent) continue;
+      tags = addStateTag(tags, 'grieving', year);
+      memories = addMemory(memories, {
+        year,
+        kind: 'kin-death',
+        summary: `lost their ${lk.relation} ${decedent.name}`,
+        magnitude: lk.relation === 'spouse' ? 0.85 : 0.7,
+        counterparty_id: decedent.id,
+        tone: 'literary',
       });
-      await tx.person.deleteMany({ where: { id: { in: naturallyDying.map(d => d.id) } } });
-      await tx.world.update({
-        where: { id: worldId },
-        data:  { total_deaths: { increment: naturalDeaths } },
-      });
+    }
+    updates.push({
+      id: s.id,
+      tagsJson: JSON.stringify(tags),
+      memJson: JSON.stringify(memories),
     });
   }
-
-  // 3. Memory decay
-  await prisma.$executeRaw`
-    DELETE FROM memory_bank
-    WHERE world_year IS NOT NULL
-      AND person_id IN (SELECT id FROM persons WHERE world_id = ${worldId}::uuid)
-      AND (${newYear}::int - world_year) > (magnitude * 20 + 3)::int
+  if (updates.length === 0) return;
+  const rows = updates.map(
+    (u) => Prisma.sql`(${u.id}::text, ${u.tagsJson}::jsonb, ${u.memJson}::jsonb)`,
+  );
+  await tx.$executeRaw`
+    UPDATE "Person" AS p
+    SET state_tags = v.tags, recent_memories = v.mem
+    FROM (VALUES ${Prisma.join(rows)}) AS v(id, tags, mem)
+    WHERE p.id = v.id
   `;
+}
 
-  // 4. Trauma decay
-  await prisma.$executeRaw`
-    UPDATE persons SET trauma_score = GREATEST(0, trauma_score * ${TRAUMA_ANNUAL_DECAY})
-    WHERE world_id = ${worldId}::uuid AND trauma_score > 0
+async function pruneAllStateTags(
+  tx: TxClient,
+  worldId: string,
+  year: number,
+): Promise<void> {
+  const persons = await tx.person.findMany({
+    where: { world_id: worldId, is_alive: true },
+    select: { id: true, state_tags: true },
+  });
+  const updates: { id: string; tagsJson: string }[] = [];
+  for (const p of persons) {
+    const tags = (Array.isArray(p.state_tags) ? p.state_tags : []) as unknown as StateTagEntry[];
+    if (tags.length === 0) continue;
+    const pruned = pruneExpiredStateTags(tags, year);
+    if (pruned.length === tags.length) continue;
+    updates.push({ id: p.id, tagsJson: JSON.stringify(pruned) });
+  }
+  if (updates.length === 0) return;
+  const rows = updates.map(
+    (u) => Prisma.sql`(${u.id}::text, ${u.tagsJson}::jsonb)`,
+  );
+  await tx.$executeRaw`
+    UPDATE "Person" AS p
+    SET state_tags = v.tags
+    FROM (VALUES ${Prisma.join(rows)}) AS v(id, tags)
+    WHERE p.id = v.id
   `;
-
-  // 5. Reload living after deaths
-  const surviving = await prisma.person.findMany({
-    where:  { world_id: worldId, current_health: { gt: 0 } },
-    select: { id: true, name: true, age: true, money: true, job_id: true, traits: true, global_scores: true, current_health: true, trauma_score: true, relationship_status: true, criminal_record: true },
-  }) as LivingPerson[];
-
-  const personSnaps = new Map<string, PersonSnapshot>();
-  for (const p of surviving) {
-    personSnaps.set(p.id, {
-      id:             p.id,
-      traits:         (p.traits        ?? {}) as Record<string, number>,
-      global_scores:  (p.global_scores ?? {}) as Record<string, number>,
-      current_health: p.current_health,
-    });
-  }
-
-  const groups = await loadActiveGroups(prisma);
-  const memberships = await loadMembershipIndex(prisma);
-
-  // 6. Membership drop-off
-  await runMembershipDropoff(prisma, personSnaps, groups);
-
-  // 7. Faction splits
-  await prisma.$transaction(async (tx) =>
-    runFactionSplitCheck(tx, personSnaps, newYear, worldId),
-  );
-
-  // 8. Relationship decay
-  await decayAndPruneForWorld(worldId);
-
-  // 9. Agentic turn
-  const allLinks = await prisma.innerCircleLink.findMany({
-    where:  { owner_id: { in: surviving.map(p => p.id) } },
-    select: { owner_id: true, target_id: true, bond_strength: true, relation_type: true },
-  });
-  const agentLinksOf = new Map<string, OwnedEdge[]>();
-  for (const l of allLinks) {
-    const arr = agentLinksOf.get(l.owner_id) ?? [];
-    arr.push({ target_id: l.target_id, bond_strength: l.bond_strength, relation_type: l.relation_type as OwnedEdge['relation_type'] });
-    agentLinksOf.set(l.owner_id, arr);
-  }
-
-  const agentSnapshots: AgentPersonSnapshot[] = surviving.map(p => ({
-    id: p.id, name: p.name, age: p.age,
-    traits:              (p.traits ?? {}) as Record<string, number>,
-    money:               p.money,
-    relationship_status: p.relationship_status,
-    criminal_record:     (p.criminal_record as unknown as CriminalRecord[]) ?? [],
-  }));
-
-  const rulesetRow = await prisma.ruleset.findFirst({ where: { is_active: true } });
-  if (rulesetRow) {
-    const rules = rulesetRow.rules as unknown as RulesetDef;
-    const effectiveTk = effectiveTick(world.year_count + 1, 0); // after year advance
-    await withTiming(timings, 'agenticTurn', () =>
-      prisma.$transaction(async (tx) =>
-        runAgenticTurn(tx, agentSnapshots, agentLinksOf, newYear, worldId, {
-          startedTick:            effectiveTk,
-          pregnancyDurationTicks: PREGNANCY_DURATION_TICKS,
-          conceive:               rules.capability_gates?.agentic_conceive,
-        }),
-      ),
-    );
-  }
-
-  // 10. Occupation income
-  await applyOccupationIncome(worldId, world.market_index);
-
-  // 11. Religion conversion pass
-  await prisma.$transaction(async (tx) =>
-    runReligionConversionPass(tx, [...personSnaps.values()], groups.religions, memberships, newYear),
-  );
-
-  // 11b. Leader extraction — Phase 5
-  await withTiming(timings, 'extractLeaderCuts', () =>
-    prisma.$transaction(async (tx) => {
-      await extractLeaderCuts(tx, worldId);
-    }),
-  );
-
-  // 12. Yearly report
-  const endPop = await prisma.person.count({ where: { world_id: worldId, current_health: { gt: 0 } } });
-  const freshWorld = await prisma.world.findUniqueOrThrow({ where: { id: worldId } });
-
-  const existing = await prisma.yearlyReport.findUnique({
-    where: { world_id_year: { world_id: worldId, year: newYear - 1 } },
-  });
-  if (!existing) {
-    await prisma.yearlyReport.create({
-      data: {
-        world_id:          worldId,
-        year:              newYear - 1,
-        population_start:  endPop + naturalDeaths,
-        population_end:    endPop,
-        births:            0,
-        deaths:            naturalDeaths,
-        deaths_by_cause:   { old_age: naturalDeaths },
-        market_index_start: freshWorld.market_index,
-        market_index_end:   freshWorld.market_index,
-        force_scores:       (freshWorld.global_traits as object),
-      },
-    });
-  }
 }
 
-// ── pg-boss worker ─────────────────────────────────────────────
-// Registered in index.ts via boss.work('advance_year', processYearJob).
-// Called by pg-boss when a job is dequeued.
+// ─── City snapshot helpers (§13 rollups) ───────────────────────────────────
 
-type YearJobData = { world_id: string; year_run_id: string };
+function snapshotAvgWealth(buckets: BucketState[]): number {
+  const total = buckets.reduce((s, b) => s + b.count, 0);
+  if (total === 0) return 0;
+  const wealthSum = buckets.reduce((s, b) => s + b.count * b.avg_wealth, 0);
+  return Math.round(wealthSum / total);
+}
 
-export async function processYearJob(jobs: Job<YearJobData>[]): Promise<void> {
-  // localConcurrency=1 so we always get exactly one job, but pg-boss passes an array
-  const job  = jobs[0];
-  if (!job) return;
-  const { world_id, year_run_id } = job.data;
-  const timings: PhaseTimings = {};
+function snapshotMoodScore(buckets: BucketState[]): number {
+  const total = buckets.reduce((s, b) => s + b.count, 0);
+  if (total === 0) return 50;
+  const moodSum = buckets.reduce((s, b) => s + b.count * b.avg_happiness, 0);
+  return Math.round((moodSum / total) * 100) / 100;
+}
 
-  try {
-    const world = await prisma.world.findUniqueOrThrow({ where: { id: world_id } });
+/**
+ * §6.4 v2 — assemble one MarketSignalsEntry from the runBucketDynamics output.
+ * Pure: no DB. Bumped numbers are rounded to keep the JSON column compact.
+ * Exported for unit testing.
+ */
+export function buildMarketSignalsEntry(
+  year: number,
+  diag: {
+    delta_food: number;
+    delta_labor: number;
+    delta_craft: number;
+    delta_capital: number;
+    food_ratio: number;
+    food_produced: number;
+    food_needed: number;
+  },
+  buckets: BucketState[],
+): MarketSignalsEntry {
+  const byType = (t: BucketState['type']): { count: number; avg_wealth: number } => {
+    const b = buckets.find((x) => x.type === t);
+    return {
+      count: b?.count ?? 0,
+      avg_wealth: b?.avg_wealth ?? 0,
+    };
+  };
+  const round4 = (n: number): number => Math.round(n * 10000) / 10000;
+  const round1 = (n: number): number => Math.round(n * 10) / 10;
+  return {
+    year,
+    food_ratio: round4(diag.food_ratio),
+    delta_food: round4(diag.delta_food),
+    delta_labor: round4(diag.delta_labor),
+    delta_craft: round4(diag.delta_craft),
+    delta_capital: round4(diag.delta_capital),
+    food_produced: round1(diag.food_produced),
+    food_needed: round1(diag.food_needed),
+    classes: {
+      farmer: byType('Farmer'),
+      laborer: byType('Laborer'),
+      artisan: byType('Artisan'),
+      merchant: byType('Merchant'),
+    },
+  };
+}
 
-    // ── Bi-annual A ───────────────────────────────────────────
-    await updateYearRun(year_run_id, 'bi_annual_a', 5);
-    const tickA = effectiveTick(world.year_count, 0);
-    await runBiAnnualPhase(world_id, tickA, world.current_year, year_run_id, timings);
-    await prisma.world.update({ where: { id: world_id }, data: { bi_annual_index: 1 } });
-    await writeSnapshot(world_id, world.current_year, 1);
-    await updateYearRun(year_run_id, 'bi_annual_a', 33, 'running', 'Bi-annual A complete');
-
-    // ── Bi-annual B ───────────────────────────────────────────
-    await updateYearRun(year_run_id, 'bi_annual_b', 38);
-    const tickB = effectiveTick(world.year_count, 1);
-    await runBiAnnualPhase(world_id, tickB, world.current_year, year_run_id, timings);
-    // bi_annual_index stays at 1 until year-end advances it back to 0
-    await writeSnapshot(world_id, world.current_year, 1);
-    await updateYearRun(year_run_id, 'bi_annual_b', 66, 'running', 'Bi-annual B complete');
-
-    // ── Year-end ──────────────────────────────────────────────
-    await updateYearRun(year_run_id, 'year_end', 70);
-    const newYear = world.current_year + 1;
-    await runYearEndPhase(world_id, newYear, year_run_id, timings);
-
-    // Advance the year counter
-    await prisma.world.update({
-      where: { id: world_id },
-      data:  { current_year: newYear, year_count: world.year_count + 1, bi_annual_index: 0 },
-    });
-    await writeSnapshot(world_id, newYear, 0);
-
-    // ── Done ──────────────────────────────────────────────────
-    await prisma.yearRun.update({
-      where: { id: year_run_id },
-      data:  { status: 'completed', phase: 'completed', progress_pct: 100, completed_at: new Date() },
-    });
-    yearRunBus.emit(year_run_id, { year_run_id, phase: 'completed', progress_pct: 100, status: 'completed' } satisfies YearRunUpdate);
-
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await prisma.yearRun.update({
-      where: { id: year_run_id },
-      data:  { status: 'failed', phase: 'failed', error: msg, completed_at: new Date() },
-    }).catch(() => {/* swallow — DB may be unavailable */});
-    yearRunBus.emit(year_run_id, { year_run_id, phase: 'failed', progress_pct: 0, status: 'failed', message: msg } satisfies YearRunUpdate);
-    throw err; // pg-boss will mark the job failed / retry
+/**
+ * Decision logic for single-flight (exposed pure for unit testing).
+ * If `active` is non-null, advance is rejected.
+ */
+export function decideAdvance(
+  active: Pick<YearRun, 'id' | 'status'> | null,
+): { allow: boolean; reason?: 'pending' | 'running' } {
+  if (!active) return { allow: true };
+  if (active.status === 'pending' || active.status === 'running') {
+    return { allow: false, reason: active.status };
   }
-}
-
-// ── Public helpers consumed by the route ─────────────────────
-
-/** Returns the running year_run for a world, or null. */
-export async function getRunningYearRun(worldId: string) {
-  return prisma.yearRun.findFirst({
-    where:   { world_id: worldId, status: 'running' },
-    orderBy: { started_at: 'desc' },
-  });
-}
-
-/** Returns a year_run by id (any status). */
-export async function getYearRun(yearRunId: string) {
-  return prisma.yearRun.findUnique({ where: { id: yearRunId } });
+  return { allow: true };
 }

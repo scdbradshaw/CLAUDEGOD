@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      '@civ-sim/shared': path.resolve(__dirname, '../shared/src/types.ts'),
+      '@claude-god/shared': path.resolve(__dirname, '../shared/src/index.ts'),
     },
   },
   server: {

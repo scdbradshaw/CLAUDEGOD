@@ -1,117 +1,87 @@
+// CLAUDE GOD — backend entrypoint.
+//
+// Phase 2: Express server + worlds router.
+// Phase 3: pg-boss worker + SSE for year advance.
+
 import 'express-async-errors';
-import 'dotenv/config';
-import express, { Request, Response, NextFunction } from 'express';
+import express from 'express';
 import cors from 'cors';
 import morgan from 'morgan';
-import { PgBoss } from 'pg-boss';
+import { worldsRouter } from './routes/worlds';
+import { yearsRouter } from './routes/years';
+import { pipelineRouter } from './routes/pipeline';
+import { personsRouter } from './routes/persons';
+import { groupsRouter } from './routes/groups';
+import { eventsRouter } from './routes/events';
+import { citiesRouter } from './routes/cities';
+import { searchRouter } from './routes/search';
+import { startBoss, stopBoss } from './lib/queue';
+import { startHeartbeat, sseHub } from './lib/sse';
+import { registerYearWorker } from './workers/year-worker';
 
-import charactersRouter    from './routes/characters';
-import godModeRouter       from './routes/god-mode';
-import aiRouter            from './routes/ai';
-import timeRouter          from './routes/time';
-import rulesetsRouter      from './routes/rulesets';
-import interactionsRouter  from './routes/interactions';
-import economyRouter       from './routes/economy';
-import ripRouter           from './routes/rip';
-import worldRouter         from './routes/world';
-import religionsRouter     from './routes/religions';
-import factionsRouter      from './routes/factions';
-import worldsRouter        from './routes/worlds';
-import citiesRouter        from './routes/cities';
-import eventsRouter        from './routes/events';
-import yearsRouter         from './routes/years';
-import { prisma }          from './db/client';
-import { startJobWorker, registerJobHandler } from './services/jobs.service';
-import { generateHeadlinesForYear, ensureDecadeSummaries } from './services/headlines.service';
-import { processYearJob } from './services/year.service';
+const PORT = Number(process.env.PORT ?? 3001);
 
-// ── pg-boss instance (exported for use by year pipeline) ─────
-export const boss = new PgBoss(process.env.DATABASE_URL!);
+export function buildApp() {
+  const app = express();
+  app.use(cors());
+  app.use(express.json({ limit: '1mb' }));
+  app.use(morgan('dev'));
 
-const app  = express();
-const PORT = process.env.PORT ?? 3001;
+  app.get('/health', (_req, res) => res.json({ ok: true }));
 
-// ── Middleware ───────────────────────────────────────────────
-app.use(cors({ origin: process.env.FRONTEND_URL ?? 'http://localhost:5173' }));
-app.use(express.json({ limit: '1mb' }));
-app.use(morgan('dev'));
+  // All gameplay routes live under /api/*
+  app.use('/api/worlds', worldsRouter);
+  app.use('/api/cities', citiesRouter);
+  app.use('/api/years', yearsRouter);
+  app.use('/api/pipeline', pipelineRouter);
+  app.use('/api/persons', personsRouter);
+  app.use('/api/groups', groupsRouter);
+  app.use('/api/events', eventsRouter);
+  app.use('/api/search', searchRouter);
 
-// ── Routes ───────────────────────────────────────────────────
-app.use('/api/characters',    charactersRouter);
-app.use('/api/god-mode',      godModeRouter);
-app.use('/api/ai',            aiRouter);
-app.use('/api/time',          timeRouter);
-app.use('/api/rulesets',      rulesetsRouter);
-app.use('/api/interactions',  interactionsRouter);
-app.use('/api/economy',       economyRouter);
-app.use('/api/rip',           ripRouter);
-app.use('/api/world',         worldRouter);
-app.use('/api/religions',     religionsRouter);
-app.use('/api/factions',      factionsRouter);
-app.use('/api/worlds',        worldsRouter);
-app.use('/api/cities',        citiesRouter);
-app.use('/api/events',        eventsRouter);
-app.use('/api/years',         yearsRouter);
+  // Final error handler — keep it simple for now.
+  app.use(
+    (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      // eslint-disable-next-line no-console
+      console.error('[backend] error:', err);
+      const message = err instanceof Error ? err.message : 'internal_error';
+      res.status(500).json({ error: 'internal_error', message });
+    },
+  );
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
-
-// ── 404 ──────────────────────────────────────────────────────
-app.use((_req, res) => res.status(404).json({ error: 'Route not found' }));
-
-// ── Error handler ────────────────────────────────────────────
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-  console.error(err);
-
-  // Prisma "record not found"
-  if (err.name === 'NotFoundError') {
-    res.status(404).json({ error: 'Character not found' });
-    return;
-  }
-
-  res.status(500).json({ error: err.message ?? 'Internal server error' });
-});
-
-// ── Background job handlers ──────────────────────────────────
-// Registered once at boot so the worker loop in jobs.service can dispatch
-// by kind. Each handler must be idempotent — the worker may retry after
-// a crash mid-job.
-registerJobHandler('generate_year_headlines', async ({ worldId, payload }) => {
-  const results = await generateHeadlinesForYear(payload.year, worldId);
-  return { headline_count: results.length };
-});
-
-registerJobHandler('generate_decade_headlines', async ({ worldId, payload }) => {
-  // ensureDecadeSummaries iterates every elapsed decade up to lastFullYear
-  // but skips ones already summarized — so passing decadeStart+9 processes
-  // only the target decade when earlier ones are already done.
-  await ensureDecadeSummaries(payload.decadeStart + 9, worldId);
-  return { decade_start: payload.decadeStart };
-});
-
-// ── Start ────────────────────────────────────────────────────
-async function main() {
-  await prisma.$connect();
-  console.log('Connected to database');
-
-  // pg-boss creates its own `pgboss` schema on first start
-  await boss.start();
-  console.log('pg-boss started');
-
-  // pg-boss 10+ requires explicit queue creation before workers or senders
-  // can reference a queue name. createQueue is idempotent.
-  await boss.createQueue('advance_year');
-
-  // Register year pipeline worker
-  await boss.work('advance_year', { localConcurrency: 1 }, processYearJob);
-  console.log('Year pipeline worker registered');
-
-  startJobWorker();
-  console.log('Job worker started');
-  app.listen(PORT, () => console.log(`Backend listening on http://localhost:${PORT}`));
+  return app;
 }
 
-main().catch((err) => {
-  console.error('Failed to start:', err);
-  process.exit(1);
-});
+/** Boot pg-boss + register the year-advance worker. Idempotent. */
+export async function bootPipeline(): Promise<void> {
+  const boss = await startBoss();
+  await registerYearWorker(boss);
+}
+
+if (require.main === module) {
+  const app = buildApp();
+  const stopHeartbeat = startHeartbeat();
+
+  bootPipeline().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.error('[backend] failed to boot pipeline:', err);
+    process.exit(1);
+  });
+
+  const server = app.listen(PORT, () => {
+    // eslint-disable-next-line no-console
+    console.log(`[backend] CLAUDE GOD listening on http://localhost:${PORT}`);
+  });
+
+  const shutdown = async (signal: string) => {
+    // eslint-disable-next-line no-console
+    console.log(`[backend] ${signal} received — shutting down`);
+    stopHeartbeat();
+    sseHub.evictAll();
+    server.close();
+    await stopBoss().catch(() => {});
+    process.exit(0);
+  };
+  process.on('SIGINT', () => void shutdown('SIGINT'));
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+}

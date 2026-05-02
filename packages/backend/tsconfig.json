@@ -13,9 +13,10 @@
     "declarationMap": true,
     "sourceMap": true,
     "paths": {
-      "@civ-sim/shared": ["../shared/src/types.ts"]
-    }
+      "@claude-god/shared": ["../shared/src/index.ts"]
+    },
+    "types": ["node", "vitest/globals"]
   },
-  "include": ["src/**/*"],
+  "include": ["src/**/*", "test/**/*"],
   "exclude": ["node_modules", "dist"]
 }

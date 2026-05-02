@@ -1,2 +1,0 @@
--- AlterTable
-ALTER TABLE "worlds" ADD COLUMN     "col_pct" DOUBLE PRECISION NOT NULL DEFAULT 0.30;
